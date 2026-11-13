@@ -126,6 +126,9 @@
   #loading { position:fixed; inset:0; background:rgba(5,33,30,.45); display:none; align-items:center;
              justify-content:center; font-size:24px; color:#fff; z-index:98; }
   .hide { display:none !important; }
+  .notice { background:#fff3c4; color:#6b4600; border:2px solid #ffd45c; border-radius:20px; padding:14px 16px;
+            margin-bottom:14px; font-size:18px; box-shadow:var(--shadow); }
+  .notice b { font-size:20px; display:block; margin-bottom:2px; }
   details summary { cursor:pointer; font-size:17px; margin-top:12px; color:var(--muted); }
 </style>
 </head>
@@ -297,13 +300,27 @@ function showTab(t) {
   window.scrollTo(0, 0);
 }
 
+function modeBanner() {
+  const s = D.settings || {};
+  if (!s.observe && !s.logAll) return '';
+  let h = `<div class="notice">`;
+  if (s.observe) h += `<b>觀察模式中：不會真的回覆</b>收到留言和私訊只會比對關鍵字，在「紀錄」寫下會回什麼。測試完請到「設定」關掉。`;
+  else h += `<b>正在記錄所有收到的訊息</b>沒觸發的留言和私訊也會寫進紀錄，並附上原因。`;
+  return h + `</div>`;
+}
+async function setModes(observe, logAll) {
+  D = await call('apiSetModes', PW, observe, logAll);
+  showTab(TAB);
+  toast(observe ? '已開啟觀察模式，不會真的回覆' : '已切回正式模式，會真的回覆');
+}
+
 /* ================= 規則列表 ================= */
 function renderRules() {
   if (!D.pages.length) {
     $('main').innerHTML = `<div class="card">還沒有粉專，請先到「粉專」分頁匯入。</div>`;
     return;
   }
-  let h = `<button class="big" onclick="openEditor('', false)">新增規則</button>`;
+  let h = modeBanner() + `<button class="big" onclick="openEditor('', false)">新增規則</button>`;
   if (!D.rules.length) h += `<div class="card">目前沒有規則，按上面的按鈕新增第一條。</div>`;
   D.rules.forEach(r => {
     const kw = r.mode === '任何留言' ? '任何內容都回覆' : r.keywords;
@@ -706,7 +723,7 @@ async function resub(id) {
 /* ================= 紀錄 ================= */
 function renderLogs() {
   const s = D.stats;
-  let h = `<div class="stats">
+  let h = modeBanner() + `<div class="stats">
     <div class="card">今日成功<b style="color:var(--ok)">${s.ok}</b></div>
     <div class="card">今日失敗<b style="color:var(--bad)">${s.fail}</b></div>
     <div class="card">排隊中<b>${s.waiting}</b></div>
@@ -720,7 +737,8 @@ function renderLogs() {
   else {
     h += `<table><tr><th>時間</th><th>來源</th><th>內容</th><th>結果</th></tr>`;
     D.logs.forEach(l => {
-      const color = /失敗/.test(l.result) ? 'var(--bad)' : /排隊|排程|延遲/.test(l.result) ? 'var(--warn)' : 'var(--ok)';
+      const color = /失敗/.test(l.result) ? 'var(--bad)' : /觀察/.test(l.result) ? 'var(--tint-ink)' :
+        /未觸發/.test(l.result) ? 'var(--muted)' : /排隊|排程|延遲/.test(l.result) ? 'var(--warn)' : 'var(--ok)';
       h += `<tr>
         <td>${esc(l.time)}</td>
         <td>${esc(l.page)}<br>${esc(l.platform)} ${esc(l.type)}<br>${esc(l.who)}</td>
@@ -748,6 +766,22 @@ async function runQueue() {
 function renderSettings() {
   const s = D.settings;
   $('main').innerHTML = `
+  <div class="card">
+    <h2>測試模式</h2>
+    <label>回覆方式</label>
+    <div class="seg">
+      <button class="${s.observe ? '' : 'on'}" onclick="setModes(false, ${s.logAll ? 'true' : 'false'})">正式回覆</button>
+      <button class="${s.observe ? 'on' : ''}" onclick="setModes(true, ${s.logAll ? 'true' : 'false'})">觀察模式</button>
+    </div>
+    <div class="hint">觀察模式：照常接收、比對關鍵字，但不會真的公開回覆或私訊，只在「紀錄」寫下會回什麼，並檢查權杖讀不讀得到那則留言。</div>
+    <label>紀錄範圍</label>
+    <div class="seg">
+      <button class="${s.logAll ? '' : 'on'}" onclick="setModes(${s.observe ? 'true' : 'false'}, false)">只記有觸發的</button>
+      <button class="${s.logAll ? 'on' : ''}" onclick="setModes(${s.observe ? 'true' : 'false'}, true)">全部都記</button>
+    </div>
+    <div class="hint">全部都記：沒觸發的留言和私訊也會記下來，並寫出原因（例如不是指定貼文、這是回覆留言、沒有符合的關鍵字）。測試完建議改回「只記有觸發的」，紀錄比較不會太多。</div>
+  </div>
+
   <div class="card">
     <h2>Webhook 設定</h2>
     <div class="hint">填到 Meta 開發者後台。</div>

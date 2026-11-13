@@ -477,6 +477,37 @@ function matchRule_(rules, ev, ignoreTime) {
   return null;
 }
 
+/* ---------- 觀察模式 ---------- */
+function isObserve_() { return prop_('OBSERVE') === '1'; }
+function isLogAll_() { return prop_('LOG_ALL') === '1'; }
+
+// 沒觸發時，找出原因（只在「記錄所有訊息」開啟時使用）
+function missReason_(rules, ev) {
+  if (!rules.some(function (r) { return r.enabled && (!r.pageId || r.pageId === ev.pageId); })) return '這個粉專沒有啟用中的規則';
+  if (matchRule_(rules, ev, true)) return '有符合的規則，但不在有效期間';
+  if (ev.type === '留言' && ev.isReply && matchRule_(rules, Object.assign({}, ev, { isReply: false }))) return '這是回覆留言，規則設定只回第一層';
+  if (ev.type === '留言' && matchRule_(rules.map(function (r) { return Object.assign({}, r, { postId: '' }); }), ev)) return '不是規則指定的貼文';
+  return '沒有符合的關鍵字';
+}
+
+// 觀察模式：不送出，只記錄會回什麼，並確認權杖讀得到這則留言
+function observe_(info, target, jobs) {
+  const parts = ['觀察模式（沒有送出）'];
+  jobs.forEach(function (j) {
+    const msg = j[1];
+    let t = (j[0] === '公開' ? '會公開回覆：' : '會私訊：') + String(msg.text || '').replace(/\s+/g, ' ').slice(0, 60);
+    const nb = (msg.links ? msg.links.length : 0) + (msg.quick ? msg.quick.length : 0);
+    if (j[0] !== '公開' && nb) t += '［按鈕 ' + nb + ' 個］';
+    parts.push(t);
+  });
+  if (jobs.some(function (j) { return j[0] !== '私訊'; })) {
+    const r = graph_('get', target, { fields: 'id' }, info.page.token);
+    parts.push(r.ok ? '檢查：權杖可以讀取這則留言' : '檢查失敗：' + r.msg);
+    if (r.tokenBad) tokenAlert_(info.page, r.msg);
+  }
+  return parts.join(' / ');
+}
+
 function randDelay_(rule) {
   const a = Number(rule.delayMin) || 0, b = Number(rule.delayMax) || 0;
   if (b <= 0) return 0;
@@ -545,10 +576,13 @@ function onComment_(page, platform, ch, rules, ctx) {
   }
   if (!cid || seen_(cid)) return;
 
-  const rule = matchRule_(rules, {
-    pageId: page.pageId, platform: platform, type: '留言', postId: postId, text: text, isReply: isReply
-  });
-  if (!rule) return;
+  const ev = { pageId: page.pageId, platform: platform, type: '留言', postId: postId, text: text, isReply: isReply };
+  const rule = matchRule_(rules, ev);
+  if (!rule) {
+    if (isLogAll_()) log_([new Date(), page.name, platform, isReply ? '留言(回覆)' : '留言', name, text, postId, '',
+      '未觸發：' + missReason_(rules, ev)]);
+    return;
+  }
 
   const info = { page: page, platform: platform, who: name, text: text, keyword: rule.hit };
   const jobs = [];
@@ -573,7 +607,11 @@ function onMessage_(page, platform, m, rules, ctx) {
   let type = isStory ? '限動回覆' : '私訊';
   let rule = matchRule_(rules, Object.assign({ type: type }, base));
   if (!rule && isStory) rule = matchRule_(rules, Object.assign({ type: '私訊' }, base)); // 沒有限動規則就用私訊規則
-  if (!rule || !rule.dm) return;
+  if (!rule || !rule.dm) {
+    if (isLogAll_()) log_([new Date(), page.name, platform, type, sid, text || '(貼圖或圖片)', '', '',
+      '未觸發：' + (rule ? '規則沒有填私訊內容' : missReason_(rules, Object.assign({ type: type }, base)))]);
+    return;
+  }
 
   const info = { page: page, platform: platform, who: sid, text: text || '(貼圖或圖片)', keyword: rule.hit };
   const jobs = [['私訊', { text: fill_(pick_(rule.dm), ''), links: rule.links, quick: rule.quick }]];
@@ -582,6 +620,7 @@ function onMessage_(page, platform, m, rules, ctx) {
 }
 
 function runJobs_(info, target, jobs, delay, ctx) {
+  if (isObserve_()) return observe_(info, target, jobs);
   const out = [];
   if (delay > 0) {
     if (delay <= INLINE_DELAY_MAX && ctx.slept + delay <= INLINE_DELAY_TOTAL) {
@@ -859,6 +898,8 @@ function loadData_() {
       appId: prop_('APP_ID'),
       hasSecret: !!prop_('APP_SECRET'),
       lineTo: prop_('LINE_TO'),
+      observe: isObserve_(),
+      logAll: isLogAll_(),
       hasLineToken: !!prop_('LINE_TOKEN'),
       email: Session.getEffectiveUser().getEmail(),
       sheetUrl: ss_().getUrl()
@@ -872,6 +913,13 @@ function apiSaveSettings(pw, s) {
   if (s.appSecret) setProp_('APP_SECRET', String(s.appSecret).trim());
   if (s.lineTo !== undefined) setProp_('LINE_TO', String(s.lineTo).trim());
   if (s.lineToken) setProp_('LINE_TOKEN', String(s.lineToken).trim());
+  return loadData_();
+}
+
+function apiSetModes(pw, observe, logAll) {
+  auth_(pw);
+  setProp_('OBSERVE', observe ? '1' : '0');
+  setProp_('LOG_ALL', logAll ? '1' : '0');
   return loadData_();
 }
 
