@@ -140,6 +140,25 @@ function pageName(id) {
 function showTime(s) {
   return s ? s.replace('T', ' ') : '';
 }
+function typesOf(t) {
+  t = String(t || '留言');
+  if (t === '全部') return ['留言', '私訊', '限動回覆'];
+  return t.split(/[,，、]/).map(x => x.trim()).filter(Boolean);
+}
+function hasType(t) {
+  return typesOf(R.type).includes(t);
+}
+function toggleType(t) {
+  const order = ['留言', '私訊', '限動回覆'];
+  let list = typesOf(R.type);
+  list = list.includes(t) ? list.filter(x => x !== t) : list.concat([t]);
+  R.type = order.filter(x => list.includes(x)).join(',');
+  renderEditor();
+}
+function typeSeg() {
+  return `<div class="seg">` + [['留言', '貼文留言'], ['私訊', '私訊'], ['限動回覆', '限動回覆']].map(([v, label]) =>
+    `<button class="${hasType(v) ? 'on' : ''}" onclick="toggleType('${v}')">${label}</button>`).join('') + `</div>`;
+}
 function ruleState(r) {
   // 依開始 / 結束時間判斷目前狀態
   if (!r.enabled) return ['off', '已停用'];
@@ -217,7 +236,8 @@ function renderRules() {
   D.rules.forEach(r => {
     const kw = r.mode === '任何留言' ? '任何內容都回覆' : r.keywords;
     const st = ruleState(r);
-    const typeName = { '留言':'貼文留言', '私訊':'私訊', '限動回覆':'限動回覆', '全部':'全部' }[r.type] || r.type;
+    const typeName = typesOf(r.type).map(t => ({ '留言':'貼文留言', '私訊':'私訊', '限動回覆':'限動回覆' }[t] || t)).join(' + ');
+    const hasComment = typesOf(r.type).includes('留言');
     let period = '';
     if (r.startAt || r.endAt) period = `期間：${showTime(r.startAt) || '不限'} ～ ${showTime(r.endAt) || '不限'}`;
     h += `<div class="card">
@@ -227,12 +247,12 @@ function renderRules() {
         <span class="tag">${esc(pageName(r.pageId))}</span>
         <span class="tag">${esc(r.platform === '全部' ? 'FB + IG' : r.platform)}</span>
         <span class="tag">${esc(typeName)}</span>
-        ${(r.type === '留言' || r.type === '全部') ? `<span class="tag">${r.topOnly ? '只回第一層' : '含回覆留言'}</span>` : ''}
+        ${hasComment ? `<span class="tag">${r.topOnly ? '只回第一層' : '含回覆留言'}</span>` : ''}
         ${r.delayMax > 0 ? `<span class="tag">延遲 ${r.delayMin}～${r.delayMax} 秒</span>` : ''}
         ${(r.links.length || r.quick.length) ? `<span class="tag">按鈕 ${r.links.length + r.quick.length} 個</span>` : ''}
       </div>
       ${period ? `<div class="preview">${esc(period)}</div>` : ''}
-      ${(r.type === '留言' || r.type === '全部') ? `<div class="preview">${r.postId ? '指定貼文：' + esc(r.postText.slice(0, 40)) : '全部貼文'}</div>` : ''}
+      ${hasComment ? `<div class="preview">${r.postId ? '指定貼文：' + esc(r.postText.slice(0, 40)) : '全部貼文'}</div>` : ''}
       ${r.publicReply ? `<div class="preview">公開回覆：${esc(r.publicReply.slice(0, 60))}</div>` : ''}
       ${r.dm ? `<div class="preview">私訊：${esc(r.dm.slice(0, 60))}</div>` : ''}
       <div class="row">
@@ -274,6 +294,7 @@ function openEditor(id, isCopy) {
       topOnly: true, startAt: '', endAt: '', delayMin: 0, delayMax: 0, links: [], quick: []
     };
   }
+  R.type = typesOf(R.type).join(',');
   while (R.links.length < 3) R.links.push({ title: '', url: '' });
   R.quickText = (R.quick || []).join(', ');
   POSTS = []; POSTS_KEY = '';
@@ -288,8 +309,6 @@ function seg(field, opts) {
 function setR(field, v) {
   R[field] = v;
   if (field === 'pageId' || field === 'platform') { R.postId = ''; R.postText = ''; POSTS = []; POSTS_KEY = ''; }
-  if (field === 'type' && v !== '留言') { R.postId = ''; R.postText = ''; }
-  if (field === 'type' && v === '限動回覆' && R.platform === 'FB') R.platform = 'IG';
   renderEditor();
 }
 function setBool(field, v) {
@@ -302,8 +321,8 @@ function boolSeg(field, yes, no) {
     <button class="${!R[field] ? 'on' : ''}" onclick="setBool('${field}', false)">${no}</button></div>`;
 }
 function renderEditor() {
-  const isComment = R.type === '留言' || R.type === '全部';
-  const canPickPost = R.type === '留言' && R.platform !== '全部';
+  const isComment = hasType('留言');
+  const canPickPost = isComment;
   const pageOpts = D.pages.map(p =>
     `<option value="${esc(p.pageId)}" ${p.pageId === R.pageId ? 'selected' : ''}>${esc(p.name)}${p.igName && !p.igOff ? '（IG：' + esc(p.igName) + '）' : ''}</option>`).join('');
 
@@ -311,17 +330,14 @@ function renderEditor() {
   if (canPickPost) {
     postBlock = `
       <div class="chosen">${R.postId ? '已選：' + esc(R.postText.slice(0, 60)) : '目前：全部貼文都適用'}</div>
-      <div class="row">
-        <button class="btn blue" onclick="loadPosts()">選擇貼文</button>
-        ${R.postId ? `<button class="btn" onclick="setR('postId','')">改回全部貼文</button>` : ''}
+      <div class="seg" style="margin-top:10px">
+        <button class="${R.postId ? 'on' : ''}" onclick="loadPosts()">選擇貼文</button>
+        <button class="${R.postId ? '' : 'on'}" onclick="allPosts()">全部貼文</button>
       </div>
+      ${(hasType('私訊') || hasType('限動回覆')) ? `<div class="hint">指定貼文只影響「貼文留言」；私訊和限動回覆不分貼文，一樣會回覆。</div>` : ''}
       <div id="postGrid"></div>`;
-  } else if (R.type === '留言') {
-    postBlock = `<div class="hint">選了「FB + IG」只能套用全部貼文；要指定貼文請選單一平台。</div>`;
-  } else if (R.type === '全部') {
-    postBlock = `<div class="hint">類型選「全部」只能套用全部貼文；要指定貼文請選「貼文留言」。</div>`;
   } else {
-    postBlock = `<div class="hint">私訊和限動回覆不分貼文。</div>`;
+    postBlock = `<div class="hint">有勾「貼文留言」才需要選貼文；私訊和限動回覆不分貼文。</div>`;
   }
 
   $('main').innerHTML = `
@@ -336,9 +352,10 @@ function renderEditor() {
     <label>哪個平台</label>
     ${seg('platform', [['FB', 'FB'], ['IG', 'IG'], ['全部', 'FB + IG']])}
 
-    <label>回覆哪裡的訊息</label>
-    ${seg('type', [['留言', '貼文留言'], ['私訊', '私訊'], ['限動回覆', '限動回覆'], ['全部', '全部']])}
-    ${R.type === '限動回覆' ? `<div class="hint">限動回覆：有人回覆你的 IG 限時動態時觸發（只有 IG）。沒有設定限動規則時，會改用私訊規則回覆。</div>` : ''}
+    <label>回覆哪裡的訊息（可複選）</label>
+    ${typeSeg()}
+    ${!R.type ? `<div class="hint" style="color:var(--bad)">請至少選一種。</div>` : ''}
+    ${hasType('限動回覆') ? `<div class="hint">限動回覆：有人回覆你的 IG 限時動態時觸發，只有 IG 才有。</div>` : ''}
 
     ${isComment ? `
       <label>哪些留言</label>
@@ -378,7 +395,7 @@ function renderEditor() {
       <label>公開回覆留言（可不填）</label>
       <textarea oninput="R.publicReply=this.value" placeholder="{名字} 已經私訊給你囉，請查看收件匣">${esc(R.publicReply)}</textarea>` : ''}
 
-    <label>私訊內容${R.type === '留言' ? '（可不填）' : ''}</label>
+    <label>私訊內容${(hasType('私訊') || hasType('限動回覆')) ? '' : '（可不填）'}</label>
     <textarea oninput="R.dm=this.value" placeholder="嗨 {名字}，這是行程介紹，請點下方按鈕">${esc(R.dm)}</textarea>
     <div class="hint">
       {名字} 會換成對方的名字（IG 是帳號名稱）。<br>
@@ -435,11 +452,24 @@ function setEndOfMonth() {
 async function loadPosts() {
   const key = R.pageId + '|' + R.platform;
   if (POSTS_KEY !== key) {
-    POSTS = await call('apiGetPosts', PW, R.pageId, R.platform);
+    const page = D.pages.find(p => p.pageId === R.pageId) || {};
+    const plats = R.platform === '全部' ? ['FB'].concat(page.igId && !page.igOff ? ['IG'] : []) : [R.platform];
+    let list = [];
+    for (const pf of plats) {
+      const posts = await call('apiGetPosts', PW, R.pageId, pf);
+      list = list.concat(posts.map(x => Object.assign({ platform: pf }, x)));
+    }
+    POSTS = list;
     POSTS_KEY = key;
   }
   if (!POSTS.length) return toast('沒有讀到貼文');
   renderPostGrid();
+}
+function allPosts() {
+  R.postId = '';
+  R.postText = '';
+  renderEditor();
+  toast('已改成全部貼文');
 }
 function renderPostGrid() {
   const g = $('postGrid');
@@ -448,7 +478,7 @@ function renderPostGrid() {
     <div class="post ${R.postId === p.id ? 'on' : ''}" onclick="choosePost(${i})">
       ${p.img ? `<img src="${esc(p.img)}" loading="lazy">` : `<div class="noimg"></div>`}
       <div class="t">${esc(p.text.slice(0, 50))}</div>
-      <div class="d">${esc(p.time)}</div>
+      <div class="d">${R.platform === '全部' ? esc(p.platform) + '　' : ''}${esc(p.time)}</div>
     </div>`).join('') + `</div>`;
 }
 function choosePost(i) {

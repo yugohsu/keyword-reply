@@ -421,6 +421,13 @@ function refreshRulesCache_() {
   getRulesCached_();
 }
 
+// 類型可複選：'留言,私訊,限動回覆'（舊資料的 '全部' 等於三種都要）
+function typesOf_(t) {
+  t = String(t || '留言').trim();
+  if (t === '全部') return ['留言', '私訊', '限動回覆'];
+  return t.split(/[,，、]/).map(function (x) { return x.trim(); }).filter(String);
+}
+
 function samePost_(a, b) {
   a = String(a || ''); b = String(b || '');
   if (!a || !b) return false;
@@ -439,8 +446,9 @@ function matchRule_(rules, ev, ignoreTime) {
     if (!r.enabled) continue;
     if (r.pageId && r.pageId !== ev.pageId) continue;
     if (r.platform !== '全部' && r.platform !== ev.platform) continue;
-    if (r.type !== '全部' && r.type !== ev.type) continue;
-    if (r.postId && (ev.type !== '留言' || !samePost_(r.postId, ev.postId))) continue;
+    if (typesOf_(r.type).indexOf(ev.type) < 0) continue;
+    // 指定貼文只限制「貼文留言」；私訊、限動回覆不受影響
+    if (r.postId && ev.type === '留言' && !samePost_(r.postId, ev.postId)) continue;
     if (ev.type === '留言' && r.topOnly && ev.isReply) continue;
     if (!ignoreTime) {
       if (r.startMs && now < r.startMs) continue;
@@ -991,14 +999,17 @@ function apiSaveRule(pw, rule) {
   const r = normRule_(rule);
   if (!r.pageId) throw new Error('請選擇粉專');
   if (r.mode !== '任何留言' && !splitKw_(r.keywords).length) throw new Error('請輸入關鍵字');
-  if ((r.type === '私訊' || r.type === '限動回覆') && !r.dm) throw new Error('這種規則一定要填私訊內容');
+  const tps = typesOf_(r.type);
+  if (!tps.length) throw new Error('請至少選一種：貼文留言、私訊或限動回覆');
+  r.type = tps.join(',');
+  if ((tps.indexOf('私訊') >= 0 || tps.indexOf('限動回覆') >= 0) && !r.dm) throw new Error('有勾私訊或限動回覆，一定要填私訊內容');
   if (!r.publicReply && !r.dm) throw new Error('公開回覆和私訊內容至少要填一個');
   if ((r.links.length || r.quick.length) && !r.dm) throw new Error('有設定按鈕，就要填私訊內容');
   if (r.startMs && r.endMs && r.endMs <= r.startMs) throw new Error('結束時間要晚於開始時間');
   r.links.forEach(function (l) {
     if (!/^https?:\/\//i.test(l.url)) throw new Error('按鈕「' + l.title + '」的網址要以 http:// 或 https:// 開頭');
   });
-  if (r.platform === '全部' || r.type === '私訊' || r.type === '限動回覆') { r.postId = ''; r.postText = ''; }
+  if (tps.indexOf('留言') < 0) { r.postId = ''; r.postText = ''; }
 
   const sh = sheet_(SH_RULES, RULE_HEADERS);
   const row = [
@@ -1062,8 +1073,9 @@ function apiTestRule(pw, rule, text, isReply) {
   auth_(pw);
   const r = normRule_(rule);
   r.enabled = true;
-  const platform = r.platform === '全部' ? 'FB' : r.platform;
-  const type = r.type === '全部' ? '留言' : r.type;
+  // FB 貼文 ID 有底線（粉專ID_貼文ID），IG 貼文 ID 是純數字
+  const platform = r.platform !== '全部' ? r.platform : (r.postId && r.postId.indexOf('_') < 0 ? 'IG' : 'FB');
+  const type = typesOf_(r.type)[0] || '留言';
   const m = matchRule_([r], {
     pageId: r.pageId, platform: platform, type: type, postId: r.postId, text: text, isReply: !!isReply
   }, true);
