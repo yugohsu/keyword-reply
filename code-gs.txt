@@ -29,7 +29,7 @@ const SH_QUEUE = '排隊';
 
 const RULE_HEADERS = ['規則ID', '啟用', '粉專ID', '平台', '類型', '貼文ID', '貼文摘要', '關鍵字',
   '比對方式', '公開回覆', '私訊內容', '排除關鍵字', '只回第一層', '開始時間', '結束時間',
-  '延遲最少秒', '延遲最多秒', '按鈕', '建立時間'];
+  '延遲最少秒', '延遲最多秒', '按鈕', '建立時間', '只觀察'];
 const LOG_HEADERS = ['時間', '粉專', '平台', '類型', '對象', '內容', '貼文ID', '符合關鍵字', '結果'];
 const QUEUE_HEADERS = ['加入時間', '預定時間', '粉專ID', '平台', '動作', '目標ID', '訊息', '對象',
   '原文', '關鍵字', '狀態', '結果', '嘗試次數'];
@@ -344,7 +344,8 @@ function normRule_(r) {
     delayMin: dmin,
     delayMax: dmax,
     links: links,
-    quick: quick
+    quick: quick,
+    observe: r.observe === true || String(r.observe).toUpperCase() === 'Y'
   };
   o.startMs = parseTime_(o.startAt);
   o.endMs = parseTime_(o.endAt);
@@ -370,7 +371,7 @@ function migrateRules_() {
     const out = rows.map(function (r) {
       return [txt_(String(r[0])), r[1], txt_(String(r[2])), r[3], r[4], txt_(String(r[5])), txt_(String(r[6])),
         txt_(String(r[7])), r[8], txt_(String(r[9])), txt_(String(r[10])), txt_(String(r[11])),
-        'N', '', '', 0, 0, '', r[12]];
+        'N', '', '', 0, 0, '', r[12], 'N'];
     });
     sh.getRange(2, 1, out.length, RULE_HEADERS.length).setValues(out);
   }
@@ -396,7 +397,7 @@ function getRules_() {
       postText: r[6], keywords: r[7], mode: r[8], publicReply: r[9], dm: r[10], exclude: r[11],
       topOnly: r[12], startAt: r[13] instanceof Date ? Utilities.formatDate(r[13], tz_(), "yyyy-MM-dd'T'HH:mm") : r[13],
       endAt: r[14] instanceof Date ? Utilities.formatDate(r[14], tz_(), "yyyy-MM-dd'T'HH:mm") : r[14],
-      delayMin: r[15], delayMax: r[16], buttons: r[17]
+      delayMin: r[15], delayMax: r[16], buttons: r[17], observe: r[19]
     });
     o.created = r[18] ? fmt_(r[18]) : '';
     return o;
@@ -492,7 +493,7 @@ function missReason_(rules, ev) {
 
 // 觀察模式：不送出，只記錄會回什麼，並確認權杖讀得到這則留言
 function observe_(info, target, jobs) {
-  const parts = ['觀察模式（沒有送出）'];
+  const parts = [isObserve_() ? '觀察模式（沒有送出）' : '只觀察（沒有送出）'];
   jobs.forEach(function (j) {
     const msg = j[1];
     let t = (j[0] === '公開' ? '會公開回覆：' : '會私訊：') + String(msg.text || '').replace(/\s+/g, ' ').slice(0, 60);
@@ -584,7 +585,7 @@ function onComment_(page, platform, ch, rules, ctx) {
     return;
   }
 
-  const info = { page: page, platform: platform, who: name, text: text, keyword: rule.hit };
+  const info = { page: page, platform: platform, who: name, text: text, keyword: rule.hit, observe: rule.observe };
   const jobs = [];
   if (rule.publicReply) jobs.push(['公開', { text: fill_(pick_(rule.publicReply), name) }]);
   if (rule.dm) jobs.push(['私訊留言', { text: fill_(pick_(rule.dm), name), links: rule.links, quick: rule.quick }]);
@@ -613,14 +614,14 @@ function onMessage_(page, platform, m, rules, ctx) {
     return;
   }
 
-  const info = { page: page, platform: platform, who: sid, text: text || '(貼圖或圖片)', keyword: rule.hit };
+  const info = { page: page, platform: platform, who: sid, text: text || '(貼圖或圖片)', keyword: rule.hit, observe: rule.observe };
   const jobs = [['私訊', { text: fill_(pick_(rule.dm), ''), links: rule.links, quick: rule.quick }]];
   const results = runJobs_(info, sid, jobs, randDelay_(rule), ctx);
   log_([new Date(), page.name, platform, type, sid, info.text, '', rule.hit, results]);
 }
 
 function runJobs_(info, target, jobs, delay, ctx) {
-  if (isObserve_()) return observe_(info, target, jobs);
+  if (isObserve_() || info.observe) return observe_(info, target, jobs);
   const out = [];
   if (delay > 0) {
     if (delay <= INLINE_DELAY_MAX && ctx.slept + delay <= INLINE_DELAY_TOTAL) {
@@ -810,7 +811,11 @@ function ensureSetup_() {
     setProp_('SETUP_VER', '2');
     refreshRulesCache_();
   }
-  sheet_(SH_RULES, RULE_HEADERS);
+  const rsh = sheet_(SH_RULES, RULE_HEADERS);
+  if (rsh.getRange(1, RULE_HEADERS.length).getValue() !== RULE_HEADERS[RULE_HEADERS.length - 1]) {
+    rsh.getRange(1, RULE_HEADERS.length).setValue(RULE_HEADERS[RULE_HEADERS.length - 1])
+      .setFontWeight('bold').setBackground('#FFE599');
+  }
   sheet_(SH_LOG, LOG_HEADERS);
   sheet_(SH_QUEUE, QUEUE_HEADERS);
   if (!prop_('VERIFY_TOKEN')) setProp_('VERIFY_TOKEN', 'yugo' + Utilities.getUuid().replace(/-/g, '').slice(0, 16));
@@ -1070,7 +1075,7 @@ function apiSaveRule(pw, rule) {
     txt_(r.id || Utilities.getUuid().slice(0, 8)), r.enabled ? 'Y' : 'N', txt_(r.pageId), r.platform, r.type,
     txt_(r.postId), txt_(r.postText), txt_(r.keywords), r.mode, txt_(r.publicReply), txt_(r.dm),
     txt_(r.exclude), r.topOnly ? 'Y' : 'N', txt_(r.startAt), txt_(r.endAt), r.delayMin, r.delayMax,
-    txt_(JSON.stringify({ links: r.links, quick: r.quick })), new Date()
+    txt_(JSON.stringify({ links: r.links, quick: r.quick })), new Date(), r.observe ? 'Y' : 'N'
   ];
   let done = false;
   if (r.id) {
@@ -1139,7 +1144,7 @@ function apiTestRule(pw, rule, text, isReply) {
     return '不會觸發';
   }
 
-  let s = '會觸發（符合：' + m.hit + '）';
+  let s = '會觸發（符合：' + m.hit + '）' + (r.observe ? '\n這條規則設定「只觀察」，實際不會送出' : '');
   const now = Date.now();
   if (r.startMs && now < r.startMs) s += '\n注意：還沒到開始時間，目前不會回覆';
   if (r.endMs && now > r.endMs) s += '\n注意：已經過了結束時間，目前不會回覆';

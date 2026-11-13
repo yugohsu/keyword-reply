@@ -304,14 +304,14 @@ function modeBanner() {
   const s = D.settings || {};
   if (!s.observe && !s.logAll) return '';
   let h = `<div class="notice">`;
-  if (s.observe) h += `<b>觀察模式中：不會真的回覆</b>收到留言和私訊只會比對關鍵字，在「紀錄」寫下會回什麼。測試完請到「設定」關掉。`;
+  if (s.observe) h += `<b>全部只觀察中：所有規則都不會真的回覆</b>收到留言和私訊只會比對關鍵字，在「紀錄」寫下會回什麼。要恢復請到「設定」選「照各規則設定」。`;
   else h += `<b>正在記錄所有收到的訊息</b>沒觸發的留言和私訊也會寫進紀錄，並附上原因。`;
   return h + `</div>`;
 }
 async function setModes(observe, logAll) {
   D = await call('apiSetModes', PW, observe, logAll);
   showTab(TAB);
-  toast(observe ? '已開啟觀察模式，不會真的回覆' : '已切回正式模式，會真的回覆');
+  toast(observe ? '已設定全部只觀察，不會真的回覆' : '已改成照各規則設定');
 }
 
 /* ================= 規則列表 ================= */
@@ -334,6 +334,7 @@ function renderRules() {
       <div class="kw">${esc(kw)}</div>
       <div>
         <span class="tag ${st[0]}">${st[1]}</span>
+        <span class="tag ${r.observe ? 'warn' : 'ok'}">${r.observe ? '只觀察' : '正式回覆'}</span>
         <span class="tag">${esc(pageName(r.pageId))}</span>
         <span class="tag">${esc(r.platform === '全部' ? 'FB + IG' : r.platform)}</span>
         <span class="tag">${esc(typeName)}</span>
@@ -381,7 +382,7 @@ function openEditor(id, isCopy) {
     R = {
       id: '', enabled: true, pageId: D.pages[0].pageId, platform: 'FB', type: '留言',
       postId: '', postText: '', keywords: '', mode: '包含', publicReply: '', dm: '', exclude: '',
-      topOnly: true, startAt: '', endAt: '', delayMin: 0, delayMax: 0, links: [], quick: []
+      topOnly: true, startAt: '', endAt: '', delayMin: 0, delayMax: 0, links: [], quick: [], observe: false
     };
   }
   R.type = typesOf(R.type).join(',');
@@ -517,6 +518,13 @@ function renderEditor() {
       0 = 立刻回覆，最快。想像真人一點可以填 2～5 秒。<br>
       超過 10 秒會改成排程送出，每分鐘處理一次，實際可能再晚一分鐘左右。
     </div>
+
+    <label>回覆方式</label>
+    <div class="seg">
+      <button class="${R.observe ? '' : 'on'}" onclick="setBool('observe', false)">正式回覆</button>
+      <button class="${R.observe ? 'on' : ''}" onclick="setBool('observe', true)">只觀察</button>
+    </div>
+    <div class="hint">只觀察：照常比對關鍵字，但不會真的回覆，只在「紀錄」寫下會回什麼。新規則建議先用「只觀察」試跑，確認沒問題再改成正式回覆。</div>
 
     <label>狀態</label>
     ${boolSeg('enabled', '啟用', '停用')}
@@ -768,12 +776,13 @@ function renderSettings() {
   $('main').innerHTML = `
   <div class="card">
     <h2>測試模式</h2>
-    <label>回覆方式</label>
+    <label>總開關</label>
     <div class="seg">
-      <button class="${s.observe ? '' : 'on'}" onclick="setModes(false, ${s.logAll ? 'true' : 'false'})">正式回覆</button>
-      <button class="${s.observe ? 'on' : ''}" onclick="setModes(true, ${s.logAll ? 'true' : 'false'})">觀察模式</button>
+      <button class="${s.observe ? '' : 'on'}" onclick="setModes(false, ${s.logAll ? 'true' : 'false'})">照各規則設定</button>
+      <button class="${s.observe ? 'on' : ''}" onclick="setModes(true, ${s.logAll ? 'true' : 'false'})">全部只觀察</button>
     </div>
-    <div class="hint">觀察模式：照常接收、比對關鍵字，但不會真的公開回覆或私訊，只在「紀錄」寫下會回什麼，並檢查權杖讀不讀得到那則留言。</div>
+    <div class="hint">平常選「照各規則設定」：每條規則在編輯畫面各自選「正式回覆」或「只觀察」。<br>
+      「全部只觀察」：所有粉專、所有規則都不會真的回覆，適合臨時全部暫停。</div>
     <label>紀錄範圍</label>
     <div class="seg">
       <button class="${s.logAll ? '' : 'on'}" onclick="setModes(${s.observe ? 'true' : 'false'}, false)">只記有觸發的</button>
