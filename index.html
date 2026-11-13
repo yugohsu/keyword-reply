@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="關鍵字回覆">
+<title>關鍵字自動回覆</title>
+<style>
+  html, body { margin:0; height:100%; background:#f2f4f7; }
+  iframe { border:0; width:100%; height:100%; display:block; }
+  #err { display:none; padding:30px 20px; font-family:"Noto Sans TC","Microsoft JhengHei",sans-serif;
+         font-size:22px; font-weight:700; text-align:center; }
+  #err a { display:block; margin-top:20px; padding:20px; background:#1a73e8; color:#fff;
+           border-radius:14px; text-decoration:none; font-size:24px; }
+</style>
+</head>
+<body>
+<!-- 把下面網址換成你的 Apps Script 部署網址（/exec 結尾） -->
+<iframe id="app" src="https://script.google.com/macros/s/AKfycbzDoWxWsAJLdC0VVOVEm4TofylfMi293NJ0U9oBrP9v3XPYomJ2w8dTZte5oOKIKBT1KQ/exec"
+        allow="clipboard-write"></iframe>
+
+<div id="err">
+  網頁載入不出來的話，請直接開啟：
+  <a id="direct" href="#">開啟管理網頁</a>
+</div>
+
+<script>
+  const url = document.getElementById('app').src;
+  document.getElementById('direct').href = url;
+  if (url.indexOf('請換成') >= 0) {
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('err').style.display = 'block';
+    document.getElementById('err').firstChild.textContent = '請先把 index.html 裡的網址換成你的 Apps Script 部署網址。';
+  }
+</script>
+</body>
+</html>
