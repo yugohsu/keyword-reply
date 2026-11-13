@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --main:#1a73e8; --bg:#f2f4f7; --ok:#188038; --bad:#d93025; --warn:#b06000; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Noto Sans TC","Microsoft JhengHei","PingFang TC",sans-serif;
+         font-size:20px; font-weight:700; background:var(--bg); color:#222; }
+  .wrap { max-width:820px; margin:0 auto; padding:14px; }
+  h1 { font-size:30px; margin:6px 0 14px; }
+  h2 { font-size:24px; margin:0 0 10px; }
+  h3 { font-size:22px; margin:26px 0 4px; padding-top:16px; border-top:2px solid #eee; }
+  .tabs { display:flex; gap:8px; position:sticky; top:0; background:var(--bg); padding:8px 0 12px; z-index:5; }
+  .tab { flex:1; padding:14px 0; border:2px solid var(--main); background:#fff; color:var(--main);
+         border-radius:12px; font-size:20px; font-weight:900; cursor:pointer; }
+  .tab.on { background:var(--main); color:#fff; }
+  .card { background:#fff; border-radius:14px; padding:16px; margin-bottom:14px; box-shadow:0 1px 4px rgba(0,0,0,.08); }
+  .big { width:100%; padding:20px; font-size:26px; font-weight:900; border:none; border-radius:14px;
+         background:var(--main); color:#fff; cursor:pointer; margin-bottom:14px; }
+  .btn { padding:12px 18px; font-size:19px; font-weight:800; border-radius:10px; border:2px solid #999;
+         background:#fff; cursor:pointer; color:#333; }
+  .btn.blue { border-color:var(--main); color:var(--main); }
+  .btn.red { border-color:var(--bad); color:var(--bad); }
+  input, select, textarea { width:100%; padding:14px; font-size:20px; font-weight:700; border:2px solid #ccc;
+         border-radius:10px; font-family:inherit; background:#fff; }
+  textarea { min-height:120px; resize:vertical; }
+  label { display:block; margin:18px 0 8px; font-size:21px; }
+  .hint { font-size:16px; color:#666; font-weight:600; margin-top:6px; line-height:1.5; }
+  .seg { display:flex; gap:8px; flex-wrap:wrap; }
+  .seg button { flex:1; min-width:110px; padding:14px 6px; font-size:19px; font-weight:800; border:2px solid #ccc;
+         background:#fff; border-radius:10px; cursor:pointer; color:#333; }
+  .seg button.on { border-color:var(--main); background:#e8f0fe; color:var(--main); }
+  .two { display:flex; gap:10px; }
+  .two > div { flex:1; }
+  .linkrow { display:flex; gap:8px; margin-bottom:8px; }
+  .linkrow input:first-child { flex:0 0 38%; }
+  .posts { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; margin-top:12px;
+         max-height:520px; overflow:auto; }
+  .post { border:3px solid #ddd; border-radius:10px; overflow:hidden; cursor:pointer; background:#fff; font-size:15px; }
+  .post.on { border-color:var(--main); }
+  .post img, .post .noimg { width:100%; height:120px; object-fit:cover; display:block; background:#e6e6e6; }
+  .post .t { padding:6px; height:64px; overflow:hidden; line-height:1.35; }
+  .post .d { padding:0 6px 6px; color:#888; font-size:13px; }
+  .chosen { background:#e8f0fe; border-radius:10px; padding:12px; font-size:18px; }
+  .kw { font-size:28px; font-weight:900; word-break:break-all; }
+  .tag { display:inline-block; padding:4px 10px; border-radius:8px; background:#eee; font-size:16px; margin:6px 6px 0 0; }
+  .tag.ok { background:#e6f4ea; color:var(--ok); }
+  .tag.off { background:#fce8e6; color:var(--bad); }
+  .tag.warn { background:#fef7e0; color:var(--warn); }
+  .preview { font-size:16px; color:#555; font-weight:600; margin-top:8px; white-space:pre-wrap; word-break:break-all; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .stats { display:flex; gap:10px; }
+  .stats .card { flex:1; text-align:center; font-size:18px; }
+  .stats b { display:block; font-size:40px; }
+  table { width:100%; border-collapse:collapse; font-size:16px; font-weight:600; }
+  td, th { border-bottom:1px solid #eee; padding:8px 6px; text-align:left; vertical-align:top; word-break:break-all; }
+  .mono { font-family:monospace; font-size:16px; word-break:break-all; background:#f1f3f4; padding:12px; border-radius:8px; }
+  .result { white-space:pre-wrap; margin-top:10px; padding:12px; border-radius:10px; background:#f1f3f4; font-size:18px; }
+  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#222; color:#fff;
+           padding:16px 24px; border-radius:12px; font-size:20px; display:none; z-index:99; max-width:90%; white-space:pre-wrap; }
+  #loading { position:fixed; inset:0; background:rgba(255,255,255,.6); display:none; align-items:center;
+             justify-content:center; font-size:26px; z-index:98; }
+  .hide { display:none !important; }
+  details summary { cursor:pointer; font-size:19px; margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>關鍵字自動回覆</h1>
+
+  <div id="login" class="card"></div>
+
+  <div id="app" class="hide">
+    <div class="tabs">
+      <button class="tab" data-t="rules" onclick="showTab('rules')">規則</button>
+      <button class="tab" data-t="pages" onclick="showTab('pages')">粉專</button>
+      <button class="tab" data-t="logs" onclick="showTab('logs')">紀錄</button>
+      <button class="tab" data-t="settings" onclick="showTab('settings')">設定</button>
+    </div>
+    <div id="main"></div>
+  </div>
+</div>
+<div id="toast"></div>
+<div id="loading">處理中…</div>
+
+<script>
+let PW = '';
+let D = null;          // 後台資料
+let R = null;          // 正在編輯的規則
+let POSTS = [];        // 已載入的貼文
+let POSTS_KEY = '';
+let TAB = 'rules';
+let CHECK = null;      // 權杖檢查結果
+
+const $ = id => document.getElementById(id);
+
+function run(fn, ...args) {
+  return new Promise((ok, no) => {
+    google.script.run.withSuccessHandler(ok).withFailureHandler(no)[fn](...args);
+  });
+}
+async function call(fn, ...args) {
+  $('loading').style.display = 'flex';
+  try { return await run(fn, ...args); }
+  catch (e) { toast(e.message || String(e), 4500); throw e; }
+  finally { $('loading').style.display = 'none'; }
+}
+function toast(msg, ms) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.style.display = 'none', ms || 3000);
+}
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+function store(k, v) {
+  try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {}
+}
+function load(k) {
+  try { return localStorage.getItem(k) || ''; } catch (e) { return ''; }
+}
+function copyText(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); toast('已複製'); } catch (e) { toast('請手動複製'); }
+  ta.remove();
+}
+function pageName(id) {
+  const p = (D.pages || []).find(x => x.pageId === id);
+  return p ? p.name : '(未知粉專)';
+}
+function showTime(s) {
+  return s ? s.replace('T', ' ') : '';
+}
+function ruleState(r) {
+  // 依開始 / 結束時間判斷目前狀態
+  if (!r.enabled) return ['off', '已停用'];
+  const now = Date.now();
+  if (r.startAt && now < new Date(r.startAt).getTime()) return ['warn', '尚未開始'];
+  if (r.endAt && now > new Date(r.endAt).getTime()) return ['off', '已結束'];
+  return ['ok', '啟用中'];
+}
+
+/* ================= 登入 ================= */
+async function init() {
+  let st;
+  try { st = await run('apiStatus'); }
+  catch (e) { $('login').innerHTML = '載入失敗：' + esc(e.message); return; }
+
+  if (!st.hasPassword) {
+    $('login').innerHTML = `
+      <h2>第一次使用，請設定管理密碼</h2>
+      <label>管理密碼</label><input id="pw1" type="password">
+      <label>再輸入一次</label><input id="pw2" type="password">
+      <div class="hint">之後打開這個網頁都要輸入這組密碼，別人拿到網址也不能亂改。</div>
+      <br><button class="big" onclick="setFirstPw()">設定密碼</button>`;
+    return;
+  }
+  const saved = load('kw_pw');
+  if (saved) {
+    try { await doLogin(saved, true); return; } catch (e) {}
+  }
+  showLogin();
+}
+function showLogin() {
+  $('login').innerHTML = `
+    <label>管理密碼</label><input id="pw" type="password" onkeydown="if(event.key==='Enter')loginClick()">
+    <br><br><button class="big" onclick="loginClick()">登入</button>`;
+}
+async function setFirstPw() {
+  const a = $('pw1').value, b = $('pw2').value;
+  if (a !== b) return toast('兩次密碼不一樣');
+  await call('apiSetPassword', a, '');
+  await doLogin(a);
+}
+function loginClick() { doLogin($('pw').value); }
+async function doLogin(pw, silent) {
+  D = silent ? await run('apiLoad', pw) : await call('apiLoad', pw);
+  PW = pw;
+  store('kw_pw', pw);
+  $('login').classList.add('hide');
+  $('app').classList.remove('hide');
+  showTab(D.pages.length ? 'rules' : 'pages');
+}
+function logout() {
+  store('kw_pw', null);
+  location.reload();
+}
+
+/* ================= 分頁 ================= */
+function showTab(t) {
+  TAB = t;
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.t === t));
+  if (t === 'rules') renderRules();
+  if (t === 'pages') renderPages();
+  if (t === 'logs') renderLogs();
+  if (t === 'settings') renderSettings();
+  window.scrollTo(0, 0);
+}
+
+/* ================= 規則列表 ================= */
+function renderRules() {
+  if (!D.pages.length) {
+    $('main').innerHTML = `<div class="card">還沒有粉專，請先到「粉專」分頁匯入。</div>`;
+    return;
+  }
+  let h = `<button class="big" onclick="openEditor('', false)">新增規則</button>`;
+  if (!D.rules.length) h += `<div class="card">目前沒有規則，按上面的按鈕新增第一條。</div>`;
+  D.rules.forEach(r => {
+    const kw = r.mode === '任何留言' ? '任何內容都回覆' : r.keywords;
+    const st = ruleState(r);
+    const typeName = { '留言':'貼文留言', '私訊':'私訊', '限動回覆':'限動回覆', '全部':'全部' }[r.type] || r.type;
+    let period = '';
+    if (r.startAt || r.endAt) period = `期間：${showTime(r.startAt) || '不限'} ～ ${showTime(r.endAt) || '不限'}`;
+    h += `<div class="card">
+      <div class="kw">${esc(kw)}</div>
+      <div>
+        <span class="tag ${st[0]}">${st[1]}</span>
+        <span class="tag">${esc(pageName(r.pageId))}</span>
+        <span class="tag">${esc(r.platform === '全部' ? 'FB + IG' : r.platform)}</span>
+        <span class="tag">${esc(typeName)}</span>
+        ${(r.type === '留言' || r.type === '全部') ? `<span class="tag">${r.topOnly ? '只回第一層' : '含回覆留言'}</span>` : ''}
+        ${r.delayMax > 0 ? `<span class="tag">延遲 ${r.delayMin}～${r.delayMax} 秒</span>` : ''}
+        ${(r.links.length || r.quick.length) ? `<span class="tag">按鈕 ${r.links.length + r.quick.length} 個</span>` : ''}
+      </div>
+      ${period ? `<div class="preview">${esc(period)}</div>` : ''}
+      ${(r.type === '留言' || r.type === '全部') ? `<div class="preview">${r.postId ? '指定貼文：' + esc(r.postText.slice(0, 40)) : '全部貼文'}</div>` : ''}
+      ${r.publicReply ? `<div class="preview">公開回覆：${esc(r.publicReply.slice(0, 60))}</div>` : ''}
+      ${r.dm ? `<div class="preview">私訊：${esc(r.dm.slice(0, 60))}</div>` : ''}
+      <div class="row">
+        <button class="btn blue" onclick="openEditor('${r.id}', false)">編輯</button>
+        <button class="btn blue" onclick="openEditor('${r.id}', true)">複製</button>
+        <button class="btn" onclick="toggleRule('${r.id}')">${r.enabled ? '停用' : '啟用'}</button>
+        <button class="btn red" onclick="deleteRule('${r.id}')">刪除</button>
+      </div>
+    </div>`;
+  });
+  $('main').innerHTML = h;
+}
+async function toggleRule(id) {
+  D = await call('apiToggleRule', PW, id);
+  renderRules();
+}
+async function deleteRule(id) {
+  if (!confirm('確定刪除這條規則？')) return;
+  D = await call('apiDeleteRule', PW, id);
+  renderRules();
+  toast('已刪除');
+}
+
+/* ================= 規則編輯 ================= */
+function openEditor(id, isCopy) {
+  const old = id ? D.rules.find(r => r.id === id) : null;
+  if (old) {
+    R = JSON.parse(JSON.stringify(old));
+    if (isCopy) {
+      R.id = '';
+      R.postId = '';
+      R.postText = '';
+      R._copy = true;
+    }
+  } else {
+    R = {
+      id: '', enabled: true, pageId: D.pages[0].pageId, platform: 'FB', type: '留言',
+      postId: '', postText: '', keywords: '', mode: '包含', publicReply: '', dm: '', exclude: '',
+      topOnly: true, startAt: '', endAt: '', delayMin: 0, delayMax: 0, links: [], quick: []
+    };
+  }
+  while (R.links.length < 3) R.links.push({ title: '', url: '' });
+  R.quickText = (R.quick || []).join(', ');
+  POSTS = []; POSTS_KEY = '';
+  renderEditor();
+  window.scrollTo(0, 0);
+  if (isCopy) toast('已複製，請重新選擇貼文並修改內容', 4000);
+}
+function seg(field, opts) {
+  return `<div class="seg">` + opts.map(([v, label]) =>
+    `<button class="${R[field] === v ? 'on' : ''}" onclick="setR('${field}','${v}')">${label}</button>`).join('') + `</div>`;
+}
+function setR(field, v) {
+  R[field] = v;
+  if (field === 'pageId' || field === 'platform') { R.postId = ''; R.postText = ''; POSTS = []; POSTS_KEY = ''; }
+  if (field === 'type' && v !== '留言') { R.postId = ''; R.postText = ''; }
+  if (field === 'type' && v === '限動回覆' && R.platform === 'FB') R.platform = 'IG';
+  renderEditor();
+}
+function setBool(field, v) {
+  R[field] = v;
+  renderEditor();
+}
+function boolSeg(field, yes, no) {
+  return `<div class="seg">
+    <button class="${R[field] ? 'on' : ''}" onclick="setBool('${field}', true)">${yes}</button>
+    <button class="${!R[field] ? 'on' : ''}" onclick="setBool('${field}', false)">${no}</button></div>`;
+}
+function renderEditor() {
+  const isComment = R.type === '留言' || R.type === '全部';
+  const canPickPost = R.type === '留言' && R.platform !== '全部';
+  const pageOpts = D.pages.map(p =>
+    `<option value="${esc(p.pageId)}" ${p.pageId === R.pageId ? 'selected' : ''}>${esc(p.name)}${p.igName && !p.igOff ? '（IG：' + esc(p.igName) + '）' : ''}</option>`).join('');
+
+  let postBlock;
+  if (canPickPost) {
+    postBlock = `
+      <div class="chosen">${R.postId ? '已選：' + esc(R.postText.slice(0, 60)) : '目前：全部貼文都適用'}</div>
+      <div class="row">
+        <button class="btn blue" onclick="loadPosts()">選擇貼文</button>
+        ${R.postId ? `<button class="btn" onclick="setR('postId','')">改回全部貼文</button>` : ''}
+      </div>
+      <div id="postGrid"></div>`;
+  } else if (R.type === '留言') {
+    postBlock = `<div class="hint">選了「FB + IG」只能套用全部貼文；要指定貼文請選單一平台。</div>`;
+  } else if (R.type === '全部') {
+    postBlock = `<div class="hint">類型選「全部」只能套用全部貼文；要指定貼文請選「貼文留言」。</div>`;
+  } else {
+    postBlock = `<div class="hint">私訊和限動回覆不分貼文。</div>`;
+  }
+
+  $('main').innerHTML = `
+  <div class="card">
+    <h2>${R.id ? '編輯規則' : R._copy ? '複製規則' : '新增規則'}</h2>
+
+    <h3>觸發條件</h3>
+
+    <label>哪個粉專</label>
+    <select onchange="setR('pageId', this.value)">${pageOpts}</select>
+
+    <label>哪個平台</label>
+    ${seg('platform', [['FB', 'FB'], ['IG', 'IG'], ['全部', 'FB + IG']])}
+
+    <label>回覆哪裡的訊息</label>
+    ${seg('type', [['留言', '貼文留言'], ['私訊', '私訊'], ['限動回覆', '限動回覆'], ['全部', '全部']])}
+    ${R.type === '限動回覆' ? `<div class="hint">限動回覆：有人回覆你的 IG 限時動態時觸發（只有 IG）。沒有設定限動規則時，會改用私訊規則回覆。</div>` : ''}
+
+    ${isComment ? `
+      <label>哪些留言</label>
+      ${boolSeg('topOnly', '只回第一層留言', '連回覆留言也回')}
+      <div class="hint">「第一層」是直接留在貼文底下的留言；「回覆留言」是別人在某則留言底下的回覆。</div>` : ''}
+
+    <label>哪篇貼文</label>
+    ${postBlock}
+
+    <label>比對方式</label>
+    ${seg('mode', [['包含', '包含關鍵字'], ['完全相同', '完全相同'], ['任何留言', '任何內容']])}
+    <div class="hint">包含：有出現就算。完全相同：只能剛好是這個字。任何內容：不管寫什麼都回。</div>
+
+    ${R.mode !== '任何留言' ? `
+      <label>關鍵字</label>
+      <input value="${esc(R.keywords)}" oninput="R.keywords=this.value" placeholder="例如：+1, 想去, 報名">
+      <div class="hint">多個關鍵字用逗號分隔，任一個符合就回覆。英文不分大小寫、全形半形都可以。</div>` : ''}
+
+    <label>排除關鍵字（可不填）</label>
+    <input value="${esc(R.exclude)}" oninput="R.exclude=this.value" placeholder="例如：取消, 不要">
+    <div class="hint">有出現這些字就不回覆。</div>
+
+    <label>有效期間（可不填）</label>
+    <div class="two">
+      <div>開始<input type="datetime-local" value="${esc(R.startAt)}" oninput="R.startAt=this.value"></div>
+      <div>結束<input type="datetime-local" value="${esc(R.endAt)}" oninput="R.endAt=this.value"></div>
+    </div>
+    <div class="hint">例如早鳥優惠只到月底：結束時間填 月底 23:59，時間到自動停止。不填就是一直有效。</div>
+    <div class="row">
+      <button class="btn" onclick="R.startAt='';R.endAt='';renderEditor()">清除期間</button>
+      <button class="btn" onclick="setEndOfMonth()">結束時間設為本月底</button>
+    </div>
+
+    <h3>回覆內容</h3>
+
+    ${isComment ? `
+      <label>公開回覆留言（可不填）</label>
+      <textarea oninput="R.publicReply=this.value" placeholder="{名字} 已經私訊給你囉，請查看收件匣">${esc(R.publicReply)}</textarea>` : ''}
+
+    <label>私訊內容${R.type === '留言' ? '（可不填）' : ''}</label>
+    <textarea oninput="R.dm=this.value" placeholder="嗨 {名字}，這是行程介紹，請點下方按鈕">${esc(R.dm)}</textarea>
+    <div class="hint">
+      {名字} 會換成對方的名字（IG 是帳號名稱）。<br>
+      想準備多種說法：每個版本之間單獨放一行 --- 隔開，系統會隨機挑一個。
+    </div>
+
+    <label>私訊網址按鈕（最多 3 個，可不填）</label>
+    ${R.links.map((l, i) => `
+      <div class="linkrow">
+        <input value="${esc(l.title)}" oninput="R.links[${i}].title=this.value" placeholder="按鈕文字" maxlength="20">
+        <input value="${esc(l.url)}" oninput="R.links[${i}].url=this.value" placeholder="https://...">
+      </div>`).join('')}
+    <div class="hint">客人點按鈕就會打開網址，例如「看行程」「立即報名」。按鈕文字最多 20 字。</div>
+
+    <label>快速回覆按鈕（可不填）</label>
+    <input value="${esc(R.quickText)}" oninput="R.quickText=this.value" placeholder="例如：問價格, 出發日期, 找小優">
+    <div class="hint">
+      用逗號分隔，最多 13 個。客人點了之後，會自動送出按鈕上的字。<br>
+      再新增一條「私訊」規則，用同樣的字當關鍵字，就能接著自動回覆。
+    </div>
+
+    <label>回覆前隨機等待（秒）</label>
+    <div class="two">
+      <div>最少<input type="number" min="0" value="${R.delayMin}" oninput="R.delayMin=Number(this.value)||0"></div>
+      <div>最多<input type="number" min="0" value="${R.delayMax}" oninput="R.delayMax=Number(this.value)||0"></div>
+    </div>
+    <div class="hint">
+      0 = 立刻回覆。建議 3～10 秒，比較像真人。<br>
+      超過 10 秒會改成排程送出，每分鐘處理一次，實際可能再晚一分鐘左右。
+    </div>
+
+    <label>狀態</label>
+    ${boolSeg('enabled', '啟用', '停用')}
+
+    <h3>測試看看</h3>
+    <input id="testText" placeholder="輸入一則假留言，例如：我想去 +1">
+    ${isComment ? `<label style="font-size:18px;margin-top:10px"><input type="checkbox" id="testReply" style="width:auto;transform:scale(1.5);margin-right:10px">這是一則回覆留言（不是第一層）</label>` : ''}
+    <div class="row"><button class="btn blue" onclick="testRule()">測試</button></div>
+    <div id="testResult"></div>
+
+    <br>
+    <button class="big" onclick="saveRule()">儲存規則</button>
+    <button class="btn" style="width:100%" onclick="showTab('rules')">取消</button>
+  </div>`;
+  if (canPickPost && POSTS.length) renderPostGrid();
+}
+function setEndOfMonth() {
+  const d = new Date();
+  const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  const pad = n => String(n).padStart(2, '0');
+  R.endAt = `${last.getFullYear()}-${pad(last.getMonth() + 1)}-${pad(last.getDate())}T23:59`;
+  renderEditor();
+}
+async function loadPosts() {
+  const key = R.pageId + '|' + R.platform;
+  if (POSTS_KEY !== key) {
+    POSTS = await call('apiGetPosts', PW, R.pageId, R.platform);
+    POSTS_KEY = key;
+  }
+  if (!POSTS.length) return toast('沒有讀到貼文');
+  renderPostGrid();
+}
+function renderPostGrid() {
+  const g = $('postGrid');
+  if (!g) return;
+  g.innerHTML = `<div class="posts">` + POSTS.map((p, i) => `
+    <div class="post ${R.postId === p.id ? 'on' : ''}" onclick="choosePost(${i})">
+      ${p.img ? `<img src="${esc(p.img)}" loading="lazy">` : `<div class="noimg"></div>`}
+      <div class="t">${esc(p.text.slice(0, 50))}</div>
+      <div class="d">${esc(p.time)}</div>
+    </div>`).join('') + `</div>`;
+}
+function choosePost(i) {
+  const p = POSTS[i];
+  R.postId = p.id;
+  R.postText = p.text.slice(0, 80);
+  renderEditor();
+  toast('已選擇貼文');
+}
+function ruleForServer() {
+  const r = Object.assign({}, R);
+  r.links = (R.links || []).filter(l => l.title.trim() && l.url.trim());
+  r.quick = String(R.quickText || '').split(/[,，、]/).map(s => s.trim()).filter(Boolean);
+  delete r.quickText;
+  delete r._copy;
+  return r;
+}
+async function testRule() {
+  const t = $('testText').value;
+  if (!t) return toast('請先輸入測試文字');
+  const isReply = $('testReply') ? $('testReply').checked : false;
+  const res = await call('apiTestRule', PW, ruleForServer(), t, isReply);
+  $('testResult').innerHTML = `<div class="result">${esc(res)}</div>`;
+}
+async function saveRule() {
+  D = await call('apiSaveRule', PW, ruleForServer());
+  toast('已儲存');
+  showTab('rules');
+}
+
+/* ================= 粉專 ================= */
+function renderPages() {
+  let h = '';
+  if (D.pages.length) {
+    h += `<button class="big" onclick="checkPages()">檢查所有粉專權杖</button>`;
+  }
+  D.pages.forEach(p => {
+    const c = CHECK ? CHECK.find(x => x.pageId === p.pageId) : null;
+    let status = '';
+    if (c) {
+      const cls = !c.ok ? 'off' : c.warn ? 'warn' : 'ok';
+      status = `<span class="tag ${cls}">${esc(c.ok && !c.warn ? '權杖正常' : c.msg)}</span>`;
+    }
+    h += `<div class="card">
+      <div class="kw">${esc(p.name)}</div>
+      ${status}
+      <div class="preview">粉專 ID：${esc(p.pageId)}</div>
+      <div class="preview">${p.igId ? 'IG：' + esc(p.igName || p.igId) + (p.igOff ? '（已停用，不會回覆 IG）' : '（使用中）') : '沒有連結 IG 專業帳號'}</div>
+      <div class="row">
+        <button class="btn blue" onclick="resub('${esc(p.pageId)}')">重新訂閱</button>
+        ${p.igId ? `<button class="btn" onclick="setIg('${esc(p.pageId)}', ${p.igOff ? 'true' : 'false'})">${p.igOff ? '啟用 IG' : '停用 IG'}</button>` : ''}
+        <button class="btn red" onclick="removePage('${esc(p.pageId)}')">移除</button>
+      </div>
+    </div>`;
+  });
+  h += `<div class="card">
+    <h2>匯入粉專</h2>
+    <label>使用者存取權杖</label>
+    <textarea id="userToken" placeholder="貼上從 Graph API 測試工具取得的權杖"></textarea>
+    <div class="hint">
+      取得方式：開發者後台 → 工具 → Graph API 測試工具 → 選你的應用程式 → 勾選權限：
+      pages_show_list、pages_read_engagement、pages_manage_metadata、pages_manage_engagement、pages_messaging、
+      instagram_basic、instagram_manage_comments、instagram_manage_messages、business_management
+      → 產生存取權杖 → 複製貼上。<br>
+      先到「設定」填好 App ID 和 App Secret，匯入時會自動換成不會過期的權杖。<br>
+      權杖失效時，重新匯入一次就好，規則不會受影響。
+    </div>
+    <br><button class="big" onclick="importPages()">匯入我管理的所有粉專</button>
+    <div id="importResult"></div>
+    <details>
+      <summary>手動新增（進階）</summary>
+      <label>粉專名稱</label><input id="mName">
+      <label>粉專 ID</label><input id="mPid">
+      <label>粉專存取權杖</label><input id="mTok">
+      <label>IG 專業帳號 ID（可不填）</label><input id="mIg">
+      <br><br><button class="btn blue" onclick="addPage()">新增</button>
+    </details>
+  </div>`;
+  $('main').innerHTML = h;
+}
+async function checkPages() {
+  CHECK = await call('apiCheckPages', PW);
+  renderPages();
+  const bad = CHECK.filter(c => !c.ok || c.warn).length;
+  toast(bad ? bad + ' 個粉專需要處理' : '全部正常');
+}
+async function importPages() {
+  const tok = $('userToken').value;
+  const res = await call('apiImportPages', PW, tok);
+  D = res.data;
+  CHECK = null;
+  renderPages();
+  $('importResult').innerHTML = `<div class="result">${esc(res.note + '\n\n' + (res.added.join('\n') || ''))}</div>`;
+}
+async function addPage() {
+  const res = await call('apiAddPage', PW, {
+    name: $('mName').value, pageId: $('mPid').value, token: $('mTok').value, igId: $('mIg').value
+  });
+  D = res.data;
+  CHECK = null;
+  renderPages();
+  toast(res.msg);
+}
+async function removePage(id) {
+  if (!confirm('確定移除這個粉專？（規則不會刪除）')) return;
+  D = await call('apiRemovePage', PW, id);
+  renderPages();
+}
+async function setIg(id, enabled) {
+  D = await call('apiSetIgEnabled', PW, id, enabled);
+  renderPages();
+  toast(enabled ? '已啟用 IG' : '已停用 IG，不會回覆這個 IG 帳號');
+}
+async function resub(id) {
+  toast(await call('apiResubscribe', PW, id));
+}
+
+/* ================= 紀錄 ================= */
+function renderLogs() {
+  const s = D.stats;
+  let h = `<div class="stats">
+    <div class="card">今日成功<b style="color:var(--ok)">${s.ok}</b></div>
+    <div class="card">今日失敗<b style="color:var(--bad)">${s.fail}</b></div>
+    <div class="card">排隊中<b>${s.waiting}</b></div>
+  </div>
+  <div class="row" style="margin-bottom:14px">
+    <button class="btn blue" onclick="refresh()">重新整理</button>
+    ${s.waiting ? `<button class="btn blue" onclick="runQueue()">立即處理排隊</button>` : ''}
+  </div>
+  <div class="card"><h2>最近紀錄</h2>`;
+  if (!D.logs.length) h += `<div class="hint">還沒有紀錄。</div>`;
+  else {
+    h += `<table><tr><th>時間</th><th>來源</th><th>內容</th><th>結果</th></tr>`;
+    D.logs.forEach(l => {
+      const color = /失敗/.test(l.result) ? 'var(--bad)' : /排隊|排程|延遲/.test(l.result) ? 'var(--warn)' : 'var(--ok)';
+      h += `<tr>
+        <td>${esc(l.time)}</td>
+        <td>${esc(l.page)}<br>${esc(l.platform)} ${esc(l.type)}<br>${esc(l.who)}</td>
+        <td>${esc(l.text)}<br><span style="color:var(--main)">${esc(l.keyword)}</span></td>
+        <td style="color:${color}">${esc(l.result)}</td>
+      </tr>`;
+    });
+    h += `</table>`;
+  }
+  h += `</div>`;
+  $('main').innerHTML = h;
+}
+async function refresh() {
+  D = await call('apiLoad', PW);
+  showTab(TAB);
+  toast('已更新');
+}
+async function runQueue() {
+  D = await call('apiProcessQueueNow', PW);
+  renderLogs();
+  toast('處理完成');
+}
+
+/* ================= 設定 ================= */
+function renderSettings() {
+  const s = D.settings;
+  $('main').innerHTML = `
+  <div class="card">
+    <h2>Webhook 設定（填到 Meta 開發者後台）</h2>
+    <label>回呼網址</label>
+    <div class="mono">${esc(s.webhookUrl)}</div>
+    <div class="row"><button class="btn blue" onclick="copyText(D.settings.webhookUrl)">複製網址</button></div>
+    <label>驗證權杖</label>
+    <div class="mono">${esc(s.verifyToken)}</div>
+    <div class="row"><button class="btn blue" onclick="copyText(D.settings.verifyToken)">複製驗證權杖</button></div>
+    <div class="hint">
+      粉絲專頁（Page）要訂閱：feed、messages<br>
+      Instagram 要訂閱：comments、messages
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>應用程式資料</h2>
+    <label>App ID</label><input id="appId" value="${esc(s.appId)}">
+    <label>App Secret</label><input id="appSecret" type="password" placeholder="${s.hasSecret ? '已設定（要更換才填）' : ''}">
+    <div class="hint">開發者後台 → 應用程式設定 → 基本資料。填了之後匯入粉專會自動換成不會過期的權杖，也能檢查權杖還有幾天到期。</div>
+    <br><button class="btn blue" onclick="saveSettings()">儲存</button>
+  </div>
+
+  <div class="card">
+    <h2>權杖失效提醒</h2>
+    <div class="hint">
+      每天早上 9 點自動檢查所有粉專，權杖失效、快到期、或訂閱中斷時通知你；回覆時發現權杖失效也會馬上通知。<br>
+      Email 會寄到：${esc(s.email)}
+    </div>
+    <label>LINE 官方帳號 Channel access token（可不填）</label>
+    <input id="lineToken" type="password" placeholder="${s.hasLineToken ? '已設定（要更換才填）' : '例如芊芊助手的 token'}">
+    <label>LINE 收件人 ID（可不填）</label>
+    <input id="lineTo" value="${esc(s.lineTo)}" placeholder="你的 userId（U 開頭）或群組 ID（C 開頭）">
+    <div class="hint">兩個都填才會用 LINE 通知，每則通知會用掉 1 則官方帳號訊息額度。</div>
+    <div class="row">
+      <button class="btn blue" onclick="saveSettings()">儲存</button>
+      <button class="btn blue" onclick="testNotify()">送出測試通知</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>更改管理密碼</h2>
+    <label>新密碼</label><input id="newPw" type="password">
+    <br><br><button class="btn blue" onclick="changePw()">更改密碼</button>
+  </div>
+
+  <button class="btn red" style="width:100%" onclick="logout()">登出</button>`;
+}
+async function saveSettings() {
+  D = await call('apiSaveSettings', PW, {
+    appId: $('appId').value,
+    appSecret: $('appSecret').value,
+    lineToken: $('lineToken').value,
+    lineTo: $('lineTo').value
+  });
+  renderSettings();
+  toast('已儲存');
+}
+async function testNotify() {
+  toast(await call('apiTestNotify', PW), 5000);
+}
+async function changePw() {
+  const np = $('newPw').value;
+  await call('apiSetPassword', np, PW);
+  PW = np;
+  store('kw_pw', np);
+  toast('密碼已更改');
+}
+
+init();
+</script>
+</body>
+</html>

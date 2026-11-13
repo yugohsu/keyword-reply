@@ -62,7 +62,9 @@ function savePages_(pages) {
 }
 function findPage_(id) {
   id = String(id);
-  return getPages_().find(function (p) { return p.pageId === id || p.igId === id; }) || null;
+  return getPages_().find(function (p) {
+    return p.pageId === id || (p.igId && p.igId === id && !p.igOff); // 停用 IG 的粉專不處理 IG 事件
+  }) || null;
 }
 function txt_(v) {
   // 文字前加 ' 讓試算表當純文字存（避免 +1 被當公式、長 ID 被變成科學記號）
@@ -792,7 +794,7 @@ function apiLoad(pw) {
 
 function loadData_() {
   const pages = getPages_().map(function (p) {
-    return { pageId: p.pageId, name: p.name, igId: p.igId || '', igName: p.igName || '' };
+    return { pageId: p.pageId, name: p.name, igId: p.igId || '', igName: p.igName || '', igOff: !!p.igOff };
   });
 
   // 今日統計 + 最近紀錄
@@ -898,9 +900,10 @@ function apiImportPages(pw, userToken) {
     const ig = a.instagram_business_account || {};
     const obj = { pageId: a.id, name: a.name, token: a.access_token, igId: ig.id || '', igName: ig.username || '' };
     const i = pages.findIndex(function (p) { return p.pageId === a.id; });
-    if (i >= 0) pages[i] = obj; else pages.push(obj);
+    if (i >= 0) { obj.igOff = !!pages[i].igOff; pages[i] = obj; } else pages.push(obj);
     const s = subscribe_(obj);
-    added.push(a.name + (obj.igName ? '（IG：' + obj.igName + '）' : '') + '　' + (s.ok ? '訂閱成功' : '訂閱失敗 ' + s.msg));
+    const igText = obj.igName ? '（IG：' + obj.igName + (obj.igOff ? '，已停用' : '') + '）' : '';
+    added.push(a.name + igText + '　' + (s.ok ? '訂閱成功' : '訂閱失敗 ' + s.msg));
   });
   savePages_(pages);
   if (!added.length) note += '\n沒有讀到任何粉專，請確認權杖有勾選 pages_show_list 權限';
@@ -936,6 +939,16 @@ function apiResubscribe(pw, pageId) {
   return s.ok ? '訂閱成功' : '訂閱失敗 ' + s.msg;
 }
 
+function apiSetIgEnabled(pw, pageId, enabled) {
+  auth_(pw);
+  const pages = getPages_();
+  const p = pages.find(function (x) { return x.pageId === pageId; });
+  if (!p) throw new Error('找不到粉專');
+  p.igOff = !enabled;
+  savePages_(pages);
+  return loadData_();
+}
+
 function apiCheckPages(pw) {
   auth_(pw);
   return checkPages_();
@@ -948,6 +961,7 @@ function apiGetPosts(pw, pageId, platform) {
   let r;
   if (platform === 'IG') {
     if (!page.igId) throw new Error('這個粉專沒有連結 IG 專業帳號');
+    if (page.igOff) throw new Error('這個粉專的 IG 已停用，請到「粉專」分頁啟用');
     r = graph_('get', page.igId + '/media', {
       fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp', limit: 30
     }, page.token);
