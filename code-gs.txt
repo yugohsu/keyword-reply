@@ -428,6 +428,11 @@ function typesOf_(t) {
   return t.split(/[,，、]/).map(function (x) { return x.trim(); }).filter(String);
 }
 
+// 指定貼文可複選，用逗號存多個貼文 ID
+function postsOf_(s) {
+  return String(s || '').split(',').map(function (x) { return x.trim(); }).filter(String);
+}
+
 function samePost_(a, b) {
   a = String(a || ''); b = String(b || '');
   if (!a || !b) return false;
@@ -448,7 +453,8 @@ function matchRule_(rules, ev, ignoreTime) {
     if (r.platform !== '全部' && r.platform !== ev.platform) continue;
     if (typesOf_(r.type).indexOf(ev.type) < 0) continue;
     // 指定貼文只限制「貼文留言」；私訊、限動回覆不受影響
-    if (r.postId && ev.type === '留言' && !samePost_(r.postId, ev.postId)) continue;
+    if (r.postId && ev.type === '留言' &&
+        !postsOf_(r.postId).some(function (id) { return samePost_(id, ev.postId); })) continue;
     if (ev.type === '留言' && r.topOnly && ev.isReply) continue;
     if (!ignoreTime) {
       if (r.startMs && now < r.startMs) continue;
@@ -1074,10 +1080,11 @@ function apiTestRule(pw, rule, text, isReply) {
   const r = normRule_(rule);
   r.enabled = true;
   // FB 貼文 ID 有底線（粉專ID_貼文ID），IG 貼文 ID 是純數字
-  const platform = r.platform !== '全部' ? r.platform : (r.postId && r.postId.indexOf('_') < 0 ? 'IG' : 'FB');
+  const firstPost = postsOf_(r.postId)[0] || '';
+  const platform = r.platform !== '全部' ? r.platform : (firstPost && firstPost.indexOf('_') < 0 ? 'IG' : 'FB');
   const type = typesOf_(r.type)[0] || '留言';
   const m = matchRule_([r], {
-    pageId: r.pageId, platform: platform, type: type, postId: r.postId, text: text, isReply: !!isReply
+    pageId: r.pageId, platform: platform, type: type, postId: firstPost, text: text, isReply: !!isReply
   }, true);
   if (!m) {
     if (type === '留言' && isReply && r.topOnly) return '不會觸發（這條規則只回第一層留言）';
