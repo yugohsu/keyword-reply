@@ -1,0 +1,1080 @@
+/**
+ * 小優 FB / IG 關鍵字自動回覆　後台程式（Code.gs）第 2 版
+ *
+ * 安裝方式：
+ *  1. 新建一個 Google 試算表 → 擴充功能 → Apps Script
+ *  2. 把這份貼到 Code.gs（整份取代）
+ *  3. 左邊「檔案 +」→ HTML → 檔名輸入 Index（大小寫要一樣）→ 貼上 Index.html 內容
+ *  4. 部署 → 新增部署作業 → 類型選「網頁應用程式」
+ *       執行身分：我　　誰可以存取：所有人
+ *  5. 打開部署網址 → 設定管理密碼 → 其餘都在網頁上操作
+ *
+ * 從第 1 版更新：兩個檔案整份取代 → 部署 → 管理部署作業 → 編輯 → 版本選「新版本」→ 部署
+ *   （網址不變，舊規則會自動轉成新格式）
+ *
+ * 第 2 版新增：
+ *  - 可選只回第一層留言
+ *  - 規則有效期間（開始 / 結束時間）
+ *  - 私訊按鈕（網址按鈕、快速回覆按鈕）
+ *  - 回覆前隨機延遲幾秒
+ *  - 權杖失效提醒（Email，可加 LINE）
+ *  - IG 限時動態回覆
+ *  - 複製規則（在網頁上操作）
+ */
+
+const GRAPH_VER = 'v23.0';
+const SH_RULES = '關鍵字規則';
+const SH_LOG = '紀錄';
+const SH_QUEUE = '排隊';
+
+const RULE_HEADERS = ['規則ID', '啟用', '粉專ID', '平台', '類型', '貼文ID', '貼文摘要', '關鍵字',
+  '比對方式', '公開回覆', '私訊內容', '排除關鍵字', '只回第一層', '開始時間', '結束時間',
+  '延遲最少秒', '延遲最多秒', '按鈕', '建立時間'];
+const LOG_HEADERS = ['時間', '粉專', '平台', '類型', '對象', '內容', '貼文ID', '符合關鍵字', '結果'];
+const QUEUE_HEADERS = ['加入時間', '預定時間', '粉專ID', '平台', '動作', '目標ID', '訊息', '對象',
+  '原文', '關鍵字', '狀態', '結果', '嘗試次數'];
+
+// 欄位位置（從 0 開始）
+const Q = { added: 0, due: 1, pageId: 2, platform: 3, action: 4, target: 5, msg: 6, who: 7,
+  text: 8, keyword: 9, status: 10, result: 11, tries: 12 };
+
+// Meta 回傳這些錯誤代碼代表「太快了 / 達上限」，要排隊稍後再送
+const RATE_LIMIT_CODES = [4, 17, 32, 613, 80001, 80002, 80006];
+
+// 延遲幾秒以內直接等待；超過就改用排隊（每分鐘處理一次）
+const INLINE_DELAY_MAX = 10;
+const INLINE_DELAY_TOTAL = 12;
+
+/* =========================================================
+ *  基本工具
+ * ========================================================= */
+function prop_(k) {
+  return (PropertiesService.getScriptProperties().getProperty(k) || '').trim();
+}
+function setProp_(k, v) {
+  PropertiesService.getScriptProperties().setProperty(k, v);
+}
+function getPages_() {
+  try { return JSON.parse(prop_('PAGES') || '[]'); } catch (e) { return []; }
+}
+function savePages_(pages) {
+  setProp_('PAGES', JSON.stringify(pages));
+}
+function findPage_(id) {
+  id = String(id);
+  return getPages_().find(function (p) { return p.pageId === id || p.igId === id; }) || null;
+}
+function txt_(v) {
+  // 文字前加 ' 讓試算表當純文字存（避免 +1 被當公式、長 ID 被變成科學記號）
+  if (v === null || v === undefined || v === '') return '';
+  return typeof v === 'string' ? "'" + v : v;
+}
+function tz_() {
+  return Session.getScriptTimeZone();
+}
+function fmt_(d) {
+  try { return Utilities.formatDate(new Date(d), tz_(), 'MM/dd HH:mm'); } catch (e) { return String(d); }
+}
+function today_() {
+  return Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd');
+}
+function parseTime_(s) {
+  // '2026-11-30T23:59' → 毫秒（依專案時區）
+  s = String(s || '').trim();
+  if (!s) return 0;
+  try { return Utilities.parseDate(s.replace('T', ' ').slice(0, 16), tz_(), 'yyyy-MM-dd HH:mm').getTime(); }
+  catch (e) { return 0; }
+}
+function ss_() {
+  // 有綁定試算表就用它；沒有（獨立的 Apps Script 專案）就自動建立一個，之後都用同一個
+  let ss = null;
+  try { ss = SpreadsheetApp.getActive(); } catch (e) {}
+  if (ss) return ss;
+  const id = prop_('SHEET_ID');
+  if (id) {
+    try { return SpreadsheetApp.openById(id); } catch (e) {}
+  }
+  ss = SpreadsheetApp.create('關鍵字自動回覆_資料');
+  setProp_('SHEET_ID', ss.getId());
+  return ss;
+}
+function sheet_(name, headers) {
+  const ss = ss_();
+  let sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    sh.getRange(1, 1, 1, headers.length).setValues([headers])
+      .setFontWeight('bold').setBackground('#FFE599');
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+function norm_(s) {
+  // 全形轉半形 + 小寫
+  return String(s || '')
+    .replace(/[！-～]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+    .replace(/　/g, ' ')
+    .toLowerCase();
+}
+function splitKw_(s) {
+  return String(s || '').split(/[,，、\n]/).map(function (k) { return k.trim(); }).filter(String);
+}
+function pick_(tpl) {
+  // 多個版本用一行 --- 隔開，隨機挑一個
+  const parts = String(tpl || '').split(/\n\s*---\s*\n/).map(function (t) { return t.trim(); }).filter(String);
+  if (!parts.length) return '';
+  return parts[Math.floor(Math.random() * parts.length)];
+}
+function fill_(tpl, name) {
+  return String(tpl || '').replace(/\{名字\}/g, name || '');
+}
+function seen_(id) {
+  // 防止 Meta 重送同一個事件造成重複回覆
+  const cache = CacheService.getScriptCache();
+  if (cache.get('done_' + id)) return true;
+  cache.put('done_' + id, '1', 21600);
+  return false;
+}
+function log_(row) {
+  sheet_(SH_LOG, LOG_HEADERS).appendRow(row.map(txt_));
+}
+
+/* =========================================================
+ *  通知（Email 一定會寄，LINE 有設定才送）
+ * ========================================================= */
+function notify_(title, body) {
+  const out = [];
+  try {
+    MailApp.sendEmail(Session.getEffectiveUser().getEmail(), title, body);
+    out.push('Email 已寄出');
+  } catch (e) { out.push('Email 失敗：' + e); }
+
+  const lineToken = prop_('LINE_TOKEN'), lineTo = prop_('LINE_TO');
+  if (lineToken && lineTo) {
+    try {
+      const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
+        method: 'post',
+        contentType: 'application/json',
+        headers: { Authorization: 'Bearer ' + lineToken },
+        payload: JSON.stringify({ to: lineTo, messages: [{ type: 'text', text: (title + '\n\n' + body).slice(0, 4900) }] }),
+        muteHttpExceptions: true
+      });
+      out.push(res.getResponseCode() === 200 ? 'LINE 已送出' : 'LINE 失敗：' + res.getContentText().slice(0, 150));
+    } catch (e) { out.push('LINE 失敗：' + e); }
+  }
+  return out.join('　');
+}
+
+function tokenAlert_(page, msg) {
+  // 回覆時發現權杖失效：6 小時內同一個粉專只通知一次
+  const cache = CacheService.getScriptCache();
+  const key = 'tokalert_' + page.pageId;
+  if (cache.get(key)) return;
+  cache.put(key, '1', 21600);
+  notify_('【關鍵字自動回覆】粉專權杖失效：' + page.name,
+    page.name + ' 的權杖已失效，自動回覆已停止。\n\n錯誤：' + msg +
+    '\n\n請打開管理網頁 →「粉專」分頁 → 重新匯入粉專。');
+}
+
+/* =========================================================
+ *  Meta Graph API
+ * ========================================================= */
+function graph_(method, path, params, token) {
+  params = params || {};
+  if (token) params.access_token = token;
+  let url = 'https://graph.facebook.com/' + GRAPH_VER + '/' + path;
+  const opt = { method: method, muteHttpExceptions: true };
+  if (method === 'get') {
+    url += '?' + Object.keys(params).map(function (k) {
+      return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+    }).join('&');
+  } else {
+    opt.payload = params;
+  }
+  try {
+    return parse_(UrlFetchApp.fetch(url, opt));
+  } catch (e) {
+    return fetchErr_(e);
+  }
+}
+
+function fetchErr_(e) {
+  const s = String(e);
+  return { ok: false, rateLimited: /too many|頻繁|次數/i.test(s), msg: s };
+}
+
+// 解析 Meta 的回應
+function parse_(res) {
+  const code = res.getResponseCode();
+  let data = {};
+  try { data = JSON.parse(res.getContentText()); } catch (e) {}
+  if (code === 200 && !data.error) return { ok: true, data: data };
+  const er = data.error || {};
+  const rl = RATE_LIMIT_CODES.indexOf(er.code) >= 0 || er.error_subcode === 2534040 ||
+    /rate limit|limit reached|too many/i.test(er.message || '');
+  return {
+    ok: false,
+    rateLimited: rl,
+    tokenBad: er.code === 190,
+    msg: '(' + (er.code || code) + ') ' + (er.message || res.getContentText().slice(0, 200))
+  };
+}
+
+// 把 {text, links, quick} 轉成 Messenger / IG 的訊息格式
+function toMessengerMsg_(msg, plain) {
+  const text = String(msg.text || '');
+  const links = (msg.links || []).filter(function (l) { return l && l.title && l.url; }).slice(0, 3);
+  const quick = (msg.quick || []).filter(String).slice(0, 13);
+  let m;
+  if (plain) {
+    // 按鈕格式被拒絕時的備案：網址直接接在文字後面
+    const extra = links.map(function (l) { return l.title + '：' + l.url; }).join('\n');
+    m = { text: (text + (extra ? '\n\n' + extra : '')).slice(0, 2000) };
+    return m;
+  }
+  if (links.length) {
+    m = {
+      attachment: {
+        type: 'template',
+        payload: {
+          template_type: 'button',
+          text: (text || '請點選下方按鈕').slice(0, 640),
+          buttons: links.map(function (l) {
+            return { type: 'web_url', url: l.url, title: String(l.title).slice(0, 20) };
+          })
+        }
+      }
+    };
+  } else {
+    m = { text: text.slice(0, 2000) };
+  }
+  if (quick.length) {
+    m.quick_replies = quick.map(function (q) {
+      return { content_type: 'text', title: String(q).slice(0, 20), payload: String(q).slice(0, 1000) };
+    });
+  }
+  return m;
+}
+
+// 組出一個要送給 Meta 的請求（可以多個一起送）
+function sendReq_(page, platform, action, target, msg, plain) {
+  let path, payload;
+  if (action === '公開') {
+    path = platform === 'FB' ? target + '/comments' : target + '/replies';
+    payload = { message: msg.text };
+  } else {
+    const recipient = action === '私訊留言' ? { comment_id: target } : { id: target };
+    path = page.pageId + '/messages';
+    payload = { recipient: JSON.stringify(recipient), message: JSON.stringify(toMessengerMsg_(msg, plain)) };
+    if (action !== '私訊留言') payload.messaging_type = 'RESPONSE';
+  }
+  payload.access_token = page.token;
+  return {
+    url: 'https://graph.facebook.com/' + GRAPH_VER + '/' + path,
+    method: 'post',
+    payload: payload,
+    muteHttpExceptions: true
+  };
+}
+
+function hasButtons_(msg) {
+  return !!((msg.links && msg.links.length) || (msg.quick && msg.quick.length));
+}
+
+// 按鈕被拒絕（例如 IG 不支援某種格式）→ 改送純文字
+function retryPlain_(page, platform, action, target, msg, r) {
+  if (r.ok || action === '公開' || !hasButtons_(msg) || r.rateLimited || r.tokenBad) return r;
+  let r2;
+  try { r2 = parse_(UrlFetchApp.fetch(sendReq_(page, platform, action, target, msg, true))); }
+  catch (e) { return r; }
+  if (r2.ok) { r2.note = '（按鈕不支援，已改送文字）'; return r2; }
+  return r;
+}
+
+function send_(page, platform, action, target, msg) {
+  let r;
+  try { r = parse_(UrlFetchApp.fetch(sendReq_(page, platform, action, target, msg, false))); }
+  catch (e) { r = fetchErr_(e); }
+  return retryPlain_(page, platform, action, target, msg, r);
+}
+
+function subscribe_(page) {
+  return graph_('post', page.pageId + '/subscribed_apps',
+    { subscribed_fields: 'feed,messages' }, page.token);
+}
+
+/* =========================================================
+ *  規則
+ * ========================================================= */
+function normRule_(r) {
+  let btn = { links: [], quick: [] };
+  if (r.links || r.quick) {
+    btn.links = r.links || [];
+    btn.quick = Array.isArray(r.quick) ? r.quick : splitKw_(r.quick);
+  } else if (r.buttons) {
+    try { btn = JSON.parse(r.buttons); } catch (e) {}
+  }
+  const links = (btn.links || []).map(function (l) {
+    return { title: String(l.title || '').trim(), url: String(l.url || '').trim() };
+  }).filter(function (l) { return l.title && l.url; }).slice(0, 3);
+  const quick = (btn.quick || []).map(function (q) { return String(q).trim(); }).filter(String).slice(0, 13);
+
+  let dmin = Math.max(0, Number(r.delayMin) || 0);
+  let dmax = Math.max(0, Number(r.delayMax) || 0);
+  if (dmax < dmin) dmax = dmin;
+
+  const o = {
+    id: String(r.id || ''),
+    enabled: r.enabled === true || String(r.enabled).toUpperCase() === 'Y',
+    pageId: String(r.pageId || ''),
+    platform: String(r.platform || '全部'),
+    type: String(r.type || '留言'),
+    postId: String(r.postId || ''),
+    postText: String(r.postText || ''),
+    keywords: String(r.keywords || ''),
+    mode: String(r.mode || '包含'),
+    publicReply: String(r.publicReply || ''),
+    dm: String(r.dm || ''),
+    exclude: String(r.exclude || ''),
+    topOnly: r.topOnly === true || String(r.topOnly).toUpperCase() === 'Y',
+    startAt: String(r.startAt || '').slice(0, 16),
+    endAt: String(r.endAt || '').slice(0, 16),
+    delayMin: dmin,
+    delayMax: dmax,
+    links: links,
+    quick: quick
+  };
+  o.startMs = parseTime_(o.startAt);
+  o.endMs = parseTime_(o.endAt);
+  return o;
+}
+
+function migrateRules_() {
+  // 第 1 版的規則表（13 欄）轉成第 2 版（19 欄）
+  const sh = ss_().getSheetByName(SH_RULES);
+  if (!sh) return;
+  const lastCol = sh.getLastColumn();
+  const head = sh.getRange(1, 1, 1, Math.max(lastCol, 1)).getValues()[0];
+  if (head.length >= RULE_HEADERS.length && head[RULE_HEADERS.length - 1] === '建立時間') return;
+  if (head[12] !== '建立時間') return;
+
+  const n = sh.getLastRow();
+  const rows = n >= 2 ? sh.getRange(2, 1, n - 1, 13).getValues() : [];
+  sh.clear();
+  sh.getRange(1, 1, 1, RULE_HEADERS.length).setValues([RULE_HEADERS])
+    .setFontWeight('bold').setBackground('#FFE599');
+  sh.setFrozenRows(1);
+  if (rows.length) {
+    const out = rows.map(function (r) {
+      return [txt_(String(r[0])), r[1], txt_(String(r[2])), r[3], r[4], txt_(String(r[5])), txt_(String(r[6])),
+        txt_(String(r[7])), r[8], txt_(String(r[9])), txt_(String(r[10])), txt_(String(r[11])),
+        'N', '', '', 0, 0, '', r[12]];
+    });
+    sh.getRange(2, 1, out.length, RULE_HEADERS.length).setValues(out);
+  }
+}
+
+function migrateQueue_() {
+  // 第 1 版的排隊表欄位不同 → 改名保留，另建新表
+  const ss = ss_();
+  const sh = ss.getSheetByName(SH_QUEUE);
+  if (!sh) return;
+  if (sh.getRange(1, 2).getValue() === '預定時間') return;
+  sh.setName(SH_QUEUE + '_舊版_' + Utilities.formatDate(new Date(), tz_(), 'MMddHHmm'));
+}
+
+function getRules_() {
+  const sh = sheet_(SH_RULES, RULE_HEADERS);
+  const n = sh.getLastRow();
+  if (n < 2) return [];
+  const rows = sh.getRange(2, 1, n - 1, RULE_HEADERS.length).getValues();
+  const list = rows.filter(function (r) { return r[0]; }).map(function (r) {
+    const o = normRule_({
+      id: r[0], enabled: r[1], pageId: r[2], platform: r[3], type: r[4], postId: r[5],
+      postText: r[6], keywords: r[7], mode: r[8], publicReply: r[9], dm: r[10], exclude: r[11],
+      topOnly: r[12], startAt: r[13] instanceof Date ? Utilities.formatDate(r[13], tz_(), "yyyy-MM-dd'T'HH:mm") : r[13],
+      endAt: r[14] instanceof Date ? Utilities.formatDate(r[14], tz_(), "yyyy-MM-dd'T'HH:mm") : r[14],
+      delayMin: r[15], delayMax: r[16], buttons: r[17]
+    });
+    o.created = r[18] ? fmt_(r[18]) : '';
+    return o;
+  });
+  // 指定貼文的規則優先比對
+  list.sort(function (a, b) { return (b.postId ? 1 : 0) - (a.postId ? 1 : 0); });
+  return list;
+}
+
+function getRulesCached_() {
+  const cache = CacheService.getScriptCache();
+  const c = cache.get('rules');
+  if (c) { try { return JSON.parse(c); } catch (e) {} }
+  const rules = getRules_();
+  try { cache.put('rules', JSON.stringify(rules), 21600); } catch (e) {} // 6 小時，改規則時會自動更新
+  return rules;
+}
+
+function refreshRulesCache_() {
+  const cache = CacheService.getScriptCache();
+  cache.remove('rules');
+  getRulesCached_();
+}
+
+function samePost_(a, b) {
+  a = String(a || ''); b = String(b || '');
+  if (!a || !b) return false;
+  return a === b || a.split('_').pop() === b.split('_').pop();
+}
+
+/**
+ * ev = { pageId, platform, type('留言'|'私訊'|'限動回覆'), postId, text, isReply }
+ * ignoreTime = true 時不檢查有效期間（測試用）
+ */
+function matchRule_(rules, ev, ignoreTime) {
+  const t = norm_(ev.text);
+  const now = Date.now();
+  for (let i = 0; i < rules.length; i++) {
+    const r = rules[i];
+    if (!r.enabled) continue;
+    if (r.pageId && r.pageId !== ev.pageId) continue;
+    if (r.platform !== '全部' && r.platform !== ev.platform) continue;
+    if (r.type !== '全部' && r.type !== ev.type) continue;
+    if (r.postId && (ev.type !== '留言' || !samePost_(r.postId, ev.postId))) continue;
+    if (ev.type === '留言' && r.topOnly && ev.isReply) continue;
+    if (!ignoreTime) {
+      if (r.startMs && now < r.startMs) continue;
+      if (r.endMs && now > r.endMs) continue;
+    }
+
+    const ex = splitKw_(r.exclude);
+    if (ex.some(function (k) { return t.indexOf(norm_(k)) >= 0; })) continue;
+
+    if (r.mode === '任何留言') return Object.assign({ hit: '(任何內容)' }, r);
+
+    const kws = splitKw_(r.keywords);
+    for (let j = 0; j < kws.length; j++) {
+      const nk = norm_(kws[j]).trim();
+      if (!nk) continue;
+      const ok = r.mode === '完全相同' ? t.trim() === nk : t.indexOf(nk) >= 0;
+      if (ok) return Object.assign({ hit: kws[j] }, r);
+    }
+  }
+  return null;
+}
+
+function randDelay_(rule) {
+  const a = Number(rule.delayMin) || 0, b = Number(rule.delayMax) || 0;
+  if (b <= 0) return 0;
+  return Math.round(a + Math.random() * (b - a));
+}
+
+/* =========================================================
+ *  Webhook：Meta 驗證（GET）／ 管理網頁
+ * ========================================================= */
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  if (p['hub.mode'] === 'subscribe') {
+    if (p['hub.verify_token'] === prop_('VERIFY_TOKEN')) {
+      return ContentService.createTextOutput(p['hub.challenge']);
+    }
+    return ContentService.createTextOutput('verify token 錯誤');
+  }
+  return HtmlService.createHtmlOutputFromFile('Index')
+    .setTitle('關鍵字自動回覆')
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL); // 允許放進 GitHub Pages 網頁裡
+}
+
+/* =========================================================
+ *  Webhook：收到留言 / 私訊（POST）
+ * ========================================================= */
+function doPost(e) {
+  const ctx = { slept: 0 };
+  try {
+    const body = JSON.parse(e.postData.contents);
+    const platform = body.object === 'instagram' ? 'IG' : 'FB';
+    const rules = getRulesCached_();
+    (body.entry || []).forEach(function (entry) {
+      const page = findPage_(entry.id);
+      if (!page) return;
+      (entry.changes || []).forEach(function (ch) { onComment_(page, platform, ch, rules, ctx); });
+      (entry.messaging || []).forEach(function (m) { onMessage_(page, platform, m, rules, ctx); });
+    });
+  } catch (err) {
+    log_([new Date(), '', '', '錯誤', '', '', '', '', String(err)]);
+  }
+  return ContentService.createTextOutput('OK');
+}
+
+function onComment_(page, platform, ch, rules, ctx) {
+  const v = ch.value || {};
+  let cid, text, fromId, name, postId, isReply;
+  if (platform === 'FB') {
+    if (ch.field !== 'feed' || v.item !== 'comment' || v.verb !== 'add') return;
+    cid = v.comment_id;
+    text = v.message || '';
+    fromId = v.from && v.from.id;
+    name = (v.from && v.from.name) || '';
+    postId = v.post_id || '';
+    isReply = !!(v.parent_id && v.parent_id !== v.post_id);
+    if (fromId === page.pageId) return;
+  } else {
+    if (ch.field !== 'comments') return;
+    cid = v.id;
+    text = v.text || '';
+    fromId = v.from && v.from.id;
+    name = (v.from && v.from.username) || '';
+    postId = (v.media && v.media.id) || '';
+    isReply = !!v.parent_id;
+    if (fromId === page.igId) return;
+  }
+  if (!cid || seen_(cid)) return;
+
+  const rule = matchRule_(rules, {
+    pageId: page.pageId, platform: platform, type: '留言', postId: postId, text: text, isReply: isReply
+  });
+  if (!rule) return;
+
+  const info = { page: page, platform: platform, who: name, text: text, keyword: rule.hit };
+  const jobs = [];
+  if (rule.publicReply) jobs.push(['公開', { text: fill_(pick_(rule.publicReply), name) }]);
+  if (rule.dm) jobs.push(['私訊留言', { text: fill_(pick_(rule.dm), name), links: rule.links, quick: rule.quick }]);
+
+  const results = runJobs_(info, cid, jobs, randDelay_(rule), ctx);
+  log_([new Date(), page.name, platform, isReply ? '留言(回覆)' : '留言', name, text, postId, rule.hit, results]);
+}
+
+function onMessage_(page, platform, m, rules, ctx) {
+  if (!m.message || m.message.is_echo) return;
+  const mid = m.message.mid;
+  if (!mid || seen_(mid)) return;
+  const sid = m.sender && m.sender.id;
+  if (!sid || sid === page.pageId || sid === page.igId) return;
+
+  const text = m.message.text || '';
+  const isStory = !!(m.message.reply_to && m.message.reply_to.story);
+  const base = { pageId: page.pageId, platform: platform, postId: '', text: text, isReply: false };
+
+  let type = isStory ? '限動回覆' : '私訊';
+  let rule = matchRule_(rules, Object.assign({ type: type }, base));
+  if (!rule && isStory) rule = matchRule_(rules, Object.assign({ type: '私訊' }, base)); // 沒有限動規則就用私訊規則
+  if (!rule || !rule.dm) return;
+
+  const info = { page: page, platform: platform, who: sid, text: text || '(貼圖或圖片)', keyword: rule.hit };
+  const jobs = [['私訊', { text: fill_(pick_(rule.dm), ''), links: rule.links, quick: rule.quick }]];
+  const results = runJobs_(info, sid, jobs, randDelay_(rule), ctx);
+  log_([new Date(), page.name, platform, type, sid, info.text, '', rule.hit, results]);
+}
+
+function runJobs_(info, target, jobs, delay, ctx) {
+  const out = [];
+  if (delay > 0) {
+    if (delay <= INLINE_DELAY_MAX && ctx.slept + delay <= INLINE_DELAY_TOTAL) {
+      Utilities.sleep(delay * 1000);
+      ctx.slept += delay;
+      out.push('等待' + delay + '秒');
+    } else {
+      const due = new Date(Date.now() + delay * 1000);
+      jobs.forEach(function (j) { enqueue_(info, j[0], target, j[1], due); });
+      return '延遲 ' + delay + ' 秒，已排程';
+    }
+  }
+
+  const cache = CacheService.getScriptCache();
+  if (cache.get('rl_' + info.page.pageId)) {
+    jobs.forEach(function (j) { enqueue_(info, j[0], target, j[1], new Date()); });
+    return out.concat(['排隊中']).join(' / ');
+  }
+
+  // 公開回覆和私訊同時送出
+  let results;
+  try {
+    const resps = UrlFetchApp.fetchAll(jobs.map(function (j) {
+      return sendReq_(info.page, info.platform, j[0], target, j[1], false);
+    }));
+    results = resps.map(parse_);
+  } catch (e) {
+    results = jobs.map(function () { return fetchErr_(e); });
+  }
+
+  jobs.forEach(function (j, i) {
+    const r = retryPlain_(info.page, info.platform, j[0], target, j[1], results[i]);
+    out.push((j[0] === '公開' ? '公開:' : '私訊:') + handleResult_(info, j[0], target, j[1], r));
+  });
+  return out.join(' / ');
+}
+
+function handleResult_(info, action, target, msg, r) {
+  if (r.ok) return '成功' + (r.note || '');
+  if (r.rateLimited) {
+    CacheService.getScriptCache().put('rl_' + info.page.pageId, '1', 600); // 暫停 10 分鐘，期間全部改排隊
+    enqueue_(info, action, target, msg, new Date());
+    return '達上限，排隊中';
+  }
+  if (r.tokenBad) tokenAlert_(info.page, r.msg);
+  return '失敗 ' + r.msg;
+}
+
+/* =========================================================
+ *  排隊（延遲回覆、超過上限補發）每分鐘自動執行
+ * ========================================================= */
+function enqueue_(info, action, target, msg, due) {
+  sheet_(SH_QUEUE, QUEUE_HEADERS).appendRow([
+    new Date(), due || new Date(), txt_(info.page.pageId), info.platform, action, txt_(String(target)),
+    txt_(JSON.stringify(msg)), txt_(String(info.who || '')), txt_(String(info.text || '')),
+    txt_(String(info.keyword || '')), '等待', '', 0
+  ]);
+  setProp_('QUEUE_HAS', '1');
+}
+
+function processQueue() {
+  if (prop_('QUEUE_HAS') !== '1') return;
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) return;
+  try {
+    const sh = sheet_(SH_QUEUE, QUEUE_HEADERS);
+    const n = sh.getLastRow();
+    if (n < 2) { setProp_('QUEUE_HAS', '0'); return; }
+    const data = sh.getRange(2, 1, n - 1, QUEUE_HEADERS.length).getValues();
+    const pages = getPages_();
+    const cache = CacheService.getScriptCache();
+    const start = Date.now();
+    let sent = 0, stillWaiting = 0, firstWaiting = -1;
+
+    for (let i = 0; i < data.length; i++) {
+      const r = data[i];
+      if (r[Q.status] !== '等待') continue;
+      const pid = String(r[Q.pageId]);
+      const due = r[Q.due] instanceof Date ? r[Q.due].getTime() : 0;
+      if (due > Date.now() || sent >= 150 || Date.now() - start > 240000 || cache.get('rl_' + pid)) {
+        stillWaiting++;
+        if (firstWaiting < 0) firstWaiting = i;
+        continue;
+      }
+      const page = pages.find(function (p) { return p.pageId === pid; });
+      const tries = Number(r[Q.tries] || 0) + 1;
+      let status, result, msg;
+      try { msg = JSON.parse(String(r[Q.msg])); } catch (e) { msg = { text: String(r[Q.msg]) }; }
+
+      if (!page) {
+        status = '失敗'; result = '找不到粉專';
+      } else {
+        const res = send_(page, String(r[Q.platform]), String(r[Q.action]), String(r[Q.target]), msg);
+        if (res.ok) { status = '完成'; result = '成功' + (res.note || ''); sent++; }
+        else if (res.rateLimited) { cache.put('rl_' + pid, '1', 600); status = '等待'; result = '達上限，稍後再試'; }
+        else {
+          if (res.tokenBad) tokenAlert_(page, res.msg);
+          status = tries >= 3 || res.tokenBad ? '失敗' : '等待';
+          result = res.msg;
+        }
+      }
+      sh.getRange(i + 2, Q.status + 1, 1, 3).setValues([[status, txt_(result), tries]]);
+      if (status === '等待') {
+        stillWaiting++;
+        if (firstWaiting < 0) firstWaiting = i;
+      } else {
+        log_([new Date(), page ? page.name : pid, String(r[Q.platform]), '排隊送出', String(r[Q.who]),
+          String(r[Q.text]), '', String(r[Q.keyword]), String(r[Q.action]) + ':' + result]);
+      }
+    }
+    if (stillWaiting === 0) setProp_('QUEUE_HAS', '0');
+
+    // 清理：前面已經處理完的列超過 500 列就刪掉，避免表格越來越大
+    const doneTop = firstWaiting < 0 ? data.length : firstWaiting;
+    if (doneTop >= 500) sh.deleteRows(2, doneTop);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* =========================================================
+ *  權杖檢查（每天早上 9 點自動執行）
+ * ========================================================= */
+function checkPages_() {
+  const appId = prop_('APP_ID'), secret = prop_('APP_SECRET');
+  return getPages_().map(function (p) {
+    const me = graph_('get', 'me', { fields: 'id,name' }, p.token);
+    if (!me.ok) return { pageId: p.pageId, name: p.name, ok: false, msg: '權杖失效 ' + me.msg };
+
+    const warns = [];
+    if (appId && secret) {
+      const d = graph_('get', 'debug_token', { input_token: p.token }, appId + '|' + secret);
+      if (d.ok) {
+        const x = d.data.data || {};
+        if (x.is_valid === false) return { pageId: p.pageId, name: p.name, ok: false, msg: '權杖失效' };
+        if (x.expires_at && x.expires_at > 0) {
+          const days = Math.floor((x.expires_at * 1000 - Date.now()) / 86400000);
+          if (days <= 7) warns.push('權杖將在 ' + Math.max(days, 0) + ' 天後到期');
+        }
+        if (x.data_access_expires_at && x.data_access_expires_at > 0) {
+          const days2 = Math.floor((x.data_access_expires_at * 1000 - Date.now()) / 86400000);
+          if (days2 <= 7) warns.push('資料存取權將在 ' + Math.max(days2, 0) + ' 天後到期');
+        }
+      }
+    }
+    const s = graph_('get', p.pageId + '/subscribed_apps', {}, p.token);
+    if (s.ok && !(s.data.data || []).length) warns.push('粉專訂閱已中斷，請按「重新訂閱」');
+
+    return { pageId: p.pageId, name: p.name, ok: true, warn: warns.length > 0, msg: warns.join('，') || '正常' };
+  });
+}
+
+function checkTokens() {
+  const res = checkPages_();
+  const bad = res.filter(function (r) { return !r.ok || r.warn; });
+  if (!bad.length) return;
+  notify_('【關鍵字自動回覆】粉專權杖提醒',
+    bad.map(function (r) { return r.name + '：' + r.msg; }).join('\n') +
+    '\n\n請打開管理網頁 →「粉專」分頁 → 重新匯入粉專或重新訂閱。');
+}
+
+/* =========================================================
+ *  觸發器與初始化
+ * ========================================================= */
+function ensureTriggers_() {
+  const TRIGGER_VER = '2';
+  const triggers = ScriptApp.getProjectTriggers();
+  if (prop_('TRIGGER_VER') !== TRIGGER_VER) {
+    triggers.forEach(function (t) {
+      const f = t.getHandlerFunction();
+      if (f === 'processQueue' || f === 'checkTokens') ScriptApp.deleteTrigger(t);
+    });
+    ScriptApp.newTrigger('processQueue').timeBased().everyMinutes(1).create();
+    ScriptApp.newTrigger('checkTokens').timeBased().atHour(9).everyDays(1).create();
+    setProp_('TRIGGER_VER', TRIGGER_VER);
+    return;
+  }
+  const names = triggers.map(function (t) { return t.getHandlerFunction(); });
+  if (names.indexOf('processQueue') < 0) ScriptApp.newTrigger('processQueue').timeBased().everyMinutes(1).create();
+  if (names.indexOf('checkTokens') < 0) ScriptApp.newTrigger('checkTokens').timeBased().atHour(9).everyDays(1).create();
+}
+
+function ensureSetup_() {
+  if (prop_('SETUP_VER') !== '2') {
+    migrateRules_();
+    migrateQueue_();
+    setProp_('SETUP_VER', '2');
+    refreshRulesCache_();
+  }
+  sheet_(SH_RULES, RULE_HEADERS);
+  sheet_(SH_LOG, LOG_HEADERS);
+  sheet_(SH_QUEUE, QUEUE_HEADERS);
+  if (!prop_('VERIFY_TOKEN')) setProp_('VERIFY_TOKEN', 'yugo' + Utilities.getUuid().replace(/-/g, '').slice(0, 16));
+  ensureTriggers_();
+}
+
+/* =========================================================
+ *  管理網頁用的 API
+ * ========================================================= */
+function auth_(pw) {
+  const saved = prop_('ADMIN_PASSWORD');
+  if (!saved) throw new Error('尚未設定管理密碼');
+  if (String(pw) !== saved) throw new Error('密碼錯誤');
+}
+
+function apiStatus() {
+  return { hasPassword: !!prop_('ADMIN_PASSWORD') };
+}
+
+function apiSetPassword(newPw, oldPw) {
+  if (prop_('ADMIN_PASSWORD')) auth_(oldPw);
+  newPw = String(newPw || '').trim();
+  if (newPw.length < 4) throw new Error('密碼至少 4 個字');
+  setProp_('ADMIN_PASSWORD', newPw);
+  ensureSetup_();
+  return true;
+}
+
+function apiLoad(pw) {
+  auth_(pw);
+  ensureSetup_();
+  return loadData_();
+}
+
+function loadData_() {
+  const pages = getPages_().map(function (p) {
+    return { pageId: p.pageId, name: p.name, igId: p.igId || '', igName: p.igName || '' };
+  });
+
+  // 今日統計 + 最近紀錄
+  const lsh = sheet_(SH_LOG, LOG_HEADERS);
+  const ln = lsh.getLastRow();
+  let logs = [], ok = 0, fail = 0;
+  if (ln >= 2) {
+    const from = Math.max(2, ln - 2999);
+    const rows = lsh.getRange(from, 1, ln - from + 1, LOG_HEADERS.length).getValues();
+    const td = today_();
+    rows.forEach(function (r) {
+      if (!(r[0] instanceof Date)) return;
+      if (Utilities.formatDate(r[0], tz_(), 'yyyy-MM-dd') !== td) return;
+      const res = String(r[8]);
+      ok += (res.match(/成功/g) || []).length;
+      fail += (res.match(/失敗/g) || []).length;
+    });
+    logs = rows.slice(-60).reverse().map(function (r) {
+      return {
+        time: r[0] instanceof Date ? fmt_(r[0]) : String(r[0]),
+        page: String(r[1]), platform: String(r[2]), type: String(r[3]), who: String(r[4]),
+        text: String(r[5]), postId: String(r[6]), keyword: String(r[7]), result: String(r[8])
+      };
+    });
+  }
+
+  // 排隊數量
+  const qsh = sheet_(SH_QUEUE, QUEUE_HEADERS);
+  const qn = qsh.getLastRow();
+  let waiting = 0;
+  if (qn >= 2) {
+    qsh.getRange(2, Q.status + 1, qn - 1, 1).getValues().forEach(function (r) { if (r[0] === '等待') waiting++; });
+  }
+
+  const rules = getRules_().map(function (r) {
+    delete r.startMs; delete r.endMs;
+    return r;
+  });
+
+  return {
+    pages: pages,
+    rules: rules,
+    logs: logs,
+    stats: { ok: ok, fail: fail, waiting: waiting },
+    settings: {
+      webhookUrl: ScriptApp.getService().getUrl() || '（請先部署成網頁應用程式）',
+      verifyToken: prop_('VERIFY_TOKEN'),
+      appId: prop_('APP_ID'),
+      hasSecret: !!prop_('APP_SECRET'),
+      lineTo: prop_('LINE_TO'),
+      hasLineToken: !!prop_('LINE_TOKEN'),
+      email: Session.getEffectiveUser().getEmail(),
+      sheetUrl: ss_().getUrl()
+    }
+  };
+}
+
+function apiSaveSettings(pw, s) {
+  auth_(pw);
+  if (s.appId !== undefined) setProp_('APP_ID', String(s.appId).trim());
+  if (s.appSecret) setProp_('APP_SECRET', String(s.appSecret).trim());
+  if (s.lineTo !== undefined) setProp_('LINE_TO', String(s.lineTo).trim());
+  if (s.lineToken) setProp_('LINE_TOKEN', String(s.lineToken).trim());
+  return loadData_();
+}
+
+function apiTestNotify(pw) {
+  auth_(pw);
+  return notify_('【關鍵字自動回覆】測試通知', '收到這則訊息代表權杖提醒設定成功。');
+}
+
+/* ---------- 粉專 ---------- */
+function apiImportPages(pw, userToken) {
+  auth_(pw);
+  ensureSetup_();
+  let token = String(userToken || '').trim();
+  if (!token) throw new Error('請貼上使用者存取權杖');
+
+  let note;
+  const appId = prop_('APP_ID'), secret = prop_('APP_SECRET');
+  if (appId && secret) {
+    const ex = graph_('get', 'oauth/access_token', {
+      grant_type: 'fb_exchange_token', client_id: appId, client_secret: secret, fb_exchange_token: token
+    });
+    if (ex.ok && ex.data.access_token) {
+      token = ex.data.access_token;
+      note = '已自動換成長效權杖（粉專權杖不會過期）';
+    } else {
+      note = '長效權杖交換失敗：' + ex.msg;
+    }
+  } else {
+    note = '注意：尚未在「設定」填 App ID 和 App Secret，這次匯入的權杖約 1 小時後失效';
+  }
+
+  const r = graph_('get', 'me/accounts', {
+    fields: 'id,name,access_token,instagram_business_account{id,username}', limit: 100
+  }, token);
+  if (!r.ok) throw new Error('讀取粉專失敗 ' + r.msg);
+
+  const pages = getPages_();
+  const added = [];
+  (r.data.data || []).forEach(function (a) {
+    const ig = a.instagram_business_account || {};
+    const obj = { pageId: a.id, name: a.name, token: a.access_token, igId: ig.id || '', igName: ig.username || '' };
+    const i = pages.findIndex(function (p) { return p.pageId === a.id; });
+    if (i >= 0) pages[i] = obj; else pages.push(obj);
+    const s = subscribe_(obj);
+    added.push(a.name + (obj.igName ? '（IG：' + obj.igName + '）' : '') + '　' + (s.ok ? '訂閱成功' : '訂閱失敗 ' + s.msg));
+  });
+  savePages_(pages);
+  if (!added.length) note += '\n沒有讀到任何粉專，請確認權杖有勾選 pages_show_list 權限';
+  return { note: note, added: added, data: loadData_() };
+}
+
+function apiAddPage(pw, p) {
+  auth_(pw);
+  if (!p.pageId || !p.token) throw new Error('粉專 ID 和粉專權杖都要填');
+  const pages = getPages_();
+  const obj = {
+    pageId: String(p.pageId).trim(), name: String(p.name || p.pageId).trim(),
+    token: String(p.token).trim(), igId: String(p.igId || '').trim(), igName: String(p.igName || '').trim()
+  };
+  const i = pages.findIndex(function (x) { return x.pageId === obj.pageId; });
+  if (i >= 0) pages[i] = obj; else pages.push(obj);
+  savePages_(pages);
+  const s = subscribe_(obj);
+  return { msg: s.ok ? '新增完成，訂閱成功' : '已新增，但訂閱失敗 ' + s.msg, data: loadData_() };
+}
+
+function apiRemovePage(pw, pageId) {
+  auth_(pw);
+  savePages_(getPages_().filter(function (p) { return p.pageId !== pageId; }));
+  return loadData_();
+}
+
+function apiResubscribe(pw, pageId) {
+  auth_(pw);
+  const page = findPage_(pageId);
+  if (!page) throw new Error('找不到粉專');
+  const s = subscribe_(page);
+  return s.ok ? '訂閱成功' : '訂閱失敗 ' + s.msg;
+}
+
+function apiCheckPages(pw) {
+  auth_(pw);
+  return checkPages_();
+}
+
+function apiGetPosts(pw, pageId, platform) {
+  auth_(pw);
+  const page = findPage_(pageId);
+  if (!page) throw new Error('找不到粉專');
+  let r;
+  if (platform === 'IG') {
+    if (!page.igId) throw new Error('這個粉專沒有連結 IG 專業帳號');
+    r = graph_('get', page.igId + '/media', {
+      fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp', limit: 30
+    }, page.token);
+    if (!r.ok) throw new Error('讀取 IG 貼文失敗 ' + r.msg);
+    return (r.data.data || []).map(function (m) {
+      return {
+        id: m.id, text: m.caption || '(沒有文字)', time: m.timestamp ? fmt_(m.timestamp) : '',
+        img: m.thumbnail_url || (m.media_type !== 'VIDEO' ? m.media_url : '') || '', link: m.permalink || ''
+      };
+    });
+  }
+  r = graph_('get', page.pageId + '/posts', {
+    fields: 'id,message,created_time,full_picture,permalink_url', limit: 30
+  }, page.token);
+  if (!r.ok) throw new Error('讀取 FB 貼文失敗 ' + r.msg);
+  return (r.data.data || []).map(function (p) {
+    return {
+      id: p.id, text: p.message || '(沒有文字)', time: p.created_time ? fmt_(p.created_time) : '',
+      img: p.full_picture || '', link: p.permalink_url || ''
+    };
+  });
+}
+
+/* ---------- 規則 ---------- */
+function apiSaveRule(pw, rule) {
+  auth_(pw);
+  const r = normRule_(rule);
+  if (!r.pageId) throw new Error('請選擇粉專');
+  if (r.mode !== '任何留言' && !splitKw_(r.keywords).length) throw new Error('請輸入關鍵字');
+  if ((r.type === '私訊' || r.type === '限動回覆') && !r.dm) throw new Error('這種規則一定要填私訊內容');
+  if (!r.publicReply && !r.dm) throw new Error('公開回覆和私訊內容至少要填一個');
+  if ((r.links.length || r.quick.length) && !r.dm) throw new Error('有設定按鈕，就要填私訊內容');
+  if (r.startMs && r.endMs && r.endMs <= r.startMs) throw new Error('結束時間要晚於開始時間');
+  r.links.forEach(function (l) {
+    if (!/^https?:\/\//i.test(l.url)) throw new Error('按鈕「' + l.title + '」的網址要以 http:// 或 https:// 開頭');
+  });
+  if (r.platform === '全部' || r.type === '私訊' || r.type === '限動回覆') { r.postId = ''; r.postText = ''; }
+
+  const sh = sheet_(SH_RULES, RULE_HEADERS);
+  const row = [
+    txt_(r.id || Utilities.getUuid().slice(0, 8)), r.enabled ? 'Y' : 'N', txt_(r.pageId), r.platform, r.type,
+    txt_(r.postId), txt_(r.postText), txt_(r.keywords), r.mode, txt_(r.publicReply), txt_(r.dm),
+    txt_(r.exclude), r.topOnly ? 'Y' : 'N', txt_(r.startAt), txt_(r.endAt), r.delayMin, r.delayMax,
+    txt_(JSON.stringify({ links: r.links, quick: r.quick })), new Date()
+  ];
+  let done = false;
+  if (r.id) {
+    const n = sh.getLastRow();
+    if (n >= 2) {
+      const ids = sh.getRange(2, 1, n - 1, 1).getValues();
+      for (let i = 0; i < ids.length; i++) {
+        if (String(ids[i][0]) === r.id) {
+          row[18] = sh.getRange(i + 2, 19).getValue() || new Date();
+          sh.getRange(i + 2, 1, 1, RULE_HEADERS.length).setValues([row]);
+          done = true;
+          break;
+        }
+      }
+    }
+  }
+  if (!done) sh.appendRow(row);
+  refreshRulesCache_();
+  return loadData_();
+}
+
+function apiToggleRule(pw, id) {
+  auth_(pw);
+  const sh = sheet_(SH_RULES, RULE_HEADERS);
+  const n = sh.getLastRow();
+  if (n >= 2) {
+    const vals = sh.getRange(2, 1, n - 1, 2).getValues();
+    for (let i = 0; i < vals.length; i++) {
+      if (String(vals[i][0]) === id) {
+        sh.getRange(i + 2, 2).setValue(String(vals[i][1]).toUpperCase() === 'Y' ? 'N' : 'Y');
+        break;
+      }
+    }
+  }
+  refreshRulesCache_();
+  return loadData_();
+}
+
+function apiDeleteRule(pw, id) {
+  auth_(pw);
+  const sh = sheet_(SH_RULES, RULE_HEADERS);
+  const n = sh.getLastRow();
+  if (n >= 2) {
+    const ids = sh.getRange(2, 1, n - 1, 1).getValues();
+    for (let i = ids.length - 1; i >= 0; i--) {
+      if (String(ids[i][0]) === id) { sh.deleteRow(i + 2); break; }
+    }
+  }
+  refreshRulesCache_();
+  return loadData_();
+}
+
+function apiTestRule(pw, rule, text, isReply) {
+  auth_(pw);
+  const r = normRule_(rule);
+  r.enabled = true;
+  const platform = r.platform === '全部' ? 'FB' : r.platform;
+  const type = r.type === '全部' ? '留言' : r.type;
+  const m = matchRule_([r], {
+    pageId: r.pageId, platform: platform, type: type, postId: r.postId, text: text, isReply: !!isReply
+  }, true);
+  if (!m) {
+    if (type === '留言' && isReply && r.topOnly) return '不會觸發（這條規則只回第一層留言）';
+    return '不會觸發';
+  }
+
+  let s = '會觸發（符合：' + m.hit + '）';
+  const now = Date.now();
+  if (r.startMs && now < r.startMs) s += '\n注意：還沒到開始時間，目前不會回覆';
+  if (r.endMs && now > r.endMs) s += '\n注意：已經過了結束時間，目前不會回覆';
+  if (r.delayMax > 0) s += '\n回覆前會隨機等待 ' + r.delayMin + '～' + r.delayMax + ' 秒';
+  if (m.publicReply && type === '留言') s += '\n\n公開回覆：\n' + fill_(pick_(m.publicReply), '王小明');
+  if (m.dm) {
+    s += '\n\n私訊：\n' + fill_(pick_(m.dm), '王小明');
+    if (m.links.length) s += '\n\n網址按鈕：' + m.links.map(function (l) { return '［' + l.title + '］'; }).join(' ');
+    if (m.quick.length) s += '\n快速回覆按鈕：' + m.quick.map(function (q) { return '［' + q + '］'; }).join(' ');
+  }
+  return s;
+}
+
+function apiProcessQueueNow(pw) {
+  auth_(pw);
+  setProp_('QUEUE_HAS', '1');
+  processQueue();
+  return loadData_();
+}
