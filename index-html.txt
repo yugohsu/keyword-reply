@@ -47,7 +47,7 @@
 
   /* 分頁 */
   .tabs { display:flex; gap:6px; position:sticky; top:8px; z-index:5; margin-bottom:16px;
-          background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.22);
+          background:rgba(6,40,36,.94); border:1px solid rgba(255,255,255,.22); box-shadow:0 8px 20px rgba(0,0,0,.3);
           padding:6px; border-radius:999px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
   .tab { flex:1; padding:12px 0; border:none; background:transparent; color:#e6fbf6;
          border-radius:999px; font-size:19px; font-weight:900; cursor:pointer; font-family:inherit; }
@@ -573,8 +573,12 @@ function togglePost(i) {
   rebuildPostText();
   if (!ids.length) R.postText = '';
   const y = window.scrollY;
+  const box = document.querySelector('.posts');
+  const inner = box ? box.scrollTop : 0;
   renderEditor();
   window.scrollTo(0, y);
+  const box2 = document.querySelector('.posts');
+  if (box2) box2.scrollTop = inner;
 }
 function closePosts() {
   POSTS_KEY = '';
