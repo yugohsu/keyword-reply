@@ -9,8 +9,8 @@
     --ink:#0d2b29; --ink2:#2a4a47; --muted:#6f8f8b;
     --tint:#e4f4f1; --tint-ink:#0f7465; --line:#d3e8e4;
     --ok-bg:#e3f5ea; --ok:#1f7a45; --warn-bg:#fff1df; --warn:#a35a00; --bad-bg:#fde6e4; --bad:#b3261e;
-    --coral:#ffa184; --coral2:#ff6a55; --coral-edge:#c6402f;
-    --peach:#ffc9a8;
+    --coral:#ffd45c; --coral2:#ff9f1c; --coral-edge:#c96f0a;
+    --peach:#ffc83d;
     --r:26px; --shadow:0 10px 30px rgba(0,25,22,.38);
   }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -62,7 +62,7 @@
 
   /* 主要按鈕（立體珊瑚橘） */
   .big { width:100%; padding:18px; font-size:24px; font-weight:900; border:none; border-radius:999px; cursor:pointer;
-         color:#3b0d06; font-family:inherit; margin-bottom:14px;
+         color:#2b1600; font-family:inherit; margin-bottom:14px;
          background:linear-gradient(180deg,var(--coral) 0%,var(--coral2) 100%);
          box-shadow:0 6px 0 var(--coral-edge), 0 12px 24px rgba(0,0,0,.25); }
   .big:active { transform:translateY(4px); box-shadow:0 2px 0 var(--coral-edge), 0 6px 12px rgba(0,0,0,.2); }
@@ -91,7 +91,7 @@
   .posts { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; margin-top:12px;
            max-height:560px; overflow:auto; padding:2px; }
   .post { position:relative; border:3px solid var(--line); border-radius:18px; overflow:hidden; cursor:pointer; background:#fff; font-size:15px; }
-  .post.on { border-color:var(--coral2); box-shadow:0 0 0 3px rgba(255,106,85,.25); }
+  .post.on { border-color:var(--coral2); box-shadow:0 0 0 3px rgba(255,159,28,.3); }
   .post img, .post .noimg { width:100%; height:120px; object-fit:cover; display:block; background:#e6efed; }
   .post .t { padding:6px 8px; height:64px; overflow:hidden; line-height:1.35; }
   .post .d { padding:0 8px 8px; color:var(--muted); font-size:13px; }
