@@ -29,7 +29,7 @@ const SH_QUEUE = '排隊';
 
 const RULE_HEADERS = ['規則ID', '啟用', '粉專ID', '平台', '類型', '貼文ID', '貼文摘要', '關鍵字',
   '比對方式', '公開回覆', '私訊內容', '排除關鍵字', '只回第一層', '開始時間', '結束時間',
-  '延遲最少秒', '延遲最多秒', '按鈕', '建立時間', '只觀察'];
+  '延遲最少秒', '延遲最多秒', '按鈕', '建立時間', '只觀察', '私訊比對方式'];
 const LOG_HEADERS = ['時間', '粉專', '平台', '類型', '對象', '內容', '貼文ID', '符合關鍵字', '結果'];
 const QUEUE_HEADERS = ['加入時間', '預定時間', '粉專ID', '平台', '動作', '目標ID', '訊息', '對象',
   '原文', '關鍵字', '狀態', '結果', '嘗試次數'];
@@ -335,6 +335,7 @@ function normRule_(r) {
     postText: String(r.postText || ''),
     keywords: String(r.keywords || ''),
     mode: String(r.mode || '包含'),
+    dmMode: String(r.dmMode || r.mode || '包含'),
     publicReply: String(r.publicReply || ''),
     dm: String(r.dm || ''),
     exclude: String(r.exclude || ''),
@@ -397,7 +398,7 @@ function getRules_() {
       postText: r[6], keywords: r[7], mode: r[8], publicReply: r[9], dm: r[10], exclude: r[11],
       topOnly: r[12], startAt: r[13] instanceof Date ? Utilities.formatDate(r[13], tz_(), "yyyy-MM-dd'T'HH:mm") : r[13],
       endAt: r[14] instanceof Date ? Utilities.formatDate(r[14], tz_(), "yyyy-MM-dd'T'HH:mm") : r[14],
-      delayMin: r[15], delayMax: r[16], buttons: r[17], observe: r[19]
+      delayMin: r[15], delayMax: r[16], buttons: r[17], observe: r[19], dmMode: r[20]
     });
     o.created = r[18] ? fmt_(r[18]) : '';
     return o;
@@ -465,13 +466,15 @@ function matchRule_(rules, ev, ignoreTime) {
     const ex = splitKw_(r.exclude);
     if (ex.some(function (k) { return t.indexOf(norm_(k)) >= 0; })) continue;
 
-    if (r.mode === '任何留言') return Object.assign({ hit: '(任何內容)' }, r);
+    // 留言用「留言比對方式」，私訊和限動回覆用「私訊比對方式」
+    const md = ev.type === '留言' ? r.mode : (r.dmMode || r.mode);
+    if (md === '任何留言') return Object.assign({ hit: '(任何內容)' }, r);
 
     const kws = splitKw_(r.keywords);
     for (let j = 0; j < kws.length; j++) {
       const nk = norm_(kws[j]).trim();
       if (!nk) continue;
-      const ok = r.mode === '完全相同' ? t.trim() === nk : t.indexOf(nk) >= 0;
+      const ok = md === '完全相同' ? t.trim() === nk : t.indexOf(nk) >= 0;
       if (ok) return Object.assign({ hit: kws[j] }, r);
     }
   }
@@ -825,9 +828,10 @@ function ensureSetup_() {
     refreshRulesCache_();
   }
   const rsh = sheet_(SH_RULES, RULE_HEADERS);
-  if (rsh.getRange(1, RULE_HEADERS.length).getValue() !== RULE_HEADERS[RULE_HEADERS.length - 1]) {
-    rsh.getRange(1, RULE_HEADERS.length).setValue(RULE_HEADERS[RULE_HEADERS.length - 1])
-      .setFontWeight('bold').setBackground('#FFE599');
+  for (let c = 20; c <= RULE_HEADERS.length; c++) {
+    if (rsh.getRange(1, c).getValue() !== RULE_HEADERS[c - 1]) {
+      rsh.getRange(1, c).setValue(RULE_HEADERS[c - 1]).setFontWeight('bold').setBackground('#FFE599');
+    }
   }
   sheet_(SH_LOG, LOG_HEADERS);
   sheet_(SH_QUEUE, QUEUE_HEADERS);
@@ -1109,9 +1113,11 @@ function apiSaveRule(pw, rule) {
   auth_(pw);
   const r = normRule_(rule);
   if (!r.pageId) throw new Error('請選擇粉專');
-  if (r.mode !== '任何留言' && !splitKw_(r.keywords).length) throw new Error('請輸入關鍵字');
   const tps = typesOf_(r.type);
   if (!tps.length) throw new Error('請至少選一種：貼文留言、私訊或限動回覆');
+  const useMode = tps.indexOf('留言') >= 0 && r.mode !== '任何留言';
+  const useDmMode = (tps.indexOf('私訊') >= 0 || tps.indexOf('限動回覆') >= 0) && r.dmMode !== '任何留言';
+  if ((useMode || useDmMode) && !splitKw_(r.keywords).length) throw new Error('請輸入關鍵字');
   r.type = tps.join(',');
   if ((tps.indexOf('私訊') >= 0 || tps.indexOf('限動回覆') >= 0) && !r.dm) throw new Error('有勾私訊或限動回覆，一定要填私訊內容');
   if (!r.publicReply && !r.dm) throw new Error('公開回覆和私訊內容至少要填一個');
@@ -1127,7 +1133,7 @@ function apiSaveRule(pw, rule) {
     txt_(r.id || Utilities.getUuid().slice(0, 8)), r.enabled ? 'Y' : 'N', txt_(r.pageId), r.platform, r.type,
     txt_(r.postId), txt_(r.postText), txt_(r.keywords), r.mode, txt_(r.publicReply), txt_(r.dm),
     txt_(r.exclude), r.topOnly ? 'Y' : 'N', txt_(r.startAt), txt_(r.endAt), r.delayMin, r.delayMax,
-    txt_(JSON.stringify({ links: r.links, quick: r.quick })), new Date(), r.observe ? 'Y' : 'N'
+    txt_(JSON.stringify({ links: r.links, quick: r.quick })), new Date(), r.observe ? 'Y' : 'N', r.dmMode
   ];
   let done = false;
   if (r.id) {

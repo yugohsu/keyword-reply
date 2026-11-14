@@ -323,7 +323,11 @@ function renderRules() {
   let h = modeBanner() + `<button class="big" onclick="openEditor('', false)">新增規則</button>`;
   if (!D.rules.length) h += `<div class="card">目前沒有規則，按上面的按鈕新增第一條。</div>`;
   D.rules.forEach(r => {
-    const kw = r.mode === '任何留言' ? '任何內容都回覆' : r.keywords;
+    const dmMode = r.dmMode || r.mode;
+    const usesC = typesOf(r.type).includes('留言'), usesD = typesOf(r.type).some(t => t !== '留言');
+    const allAny = (!usesC || r.mode === '任何留言') && (!usesD || dmMode === '任何留言');
+    const kw = allAny ? '任何內容都回覆' : r.keywords;
+    const modeName = m => ({ '包含': '包含', '完全相同': '完全相同', '任何留言': '任何內容' }[m] || m);
     const st = ruleState(r);
     const typeName = typesOf(r.type).map(t => ({ '留言':'貼文留言', '私訊':'私訊', '限動回覆':'限動回覆' }[t] || t)).join(' + ');
     const hasComment = typesOf(r.type).includes('留言');
@@ -339,6 +343,8 @@ function renderRules() {
         <span class="tag">${esc(r.platform === '全部' ? 'FB + IG' : r.platform)}</span>
         <span class="tag">${esc(typeName)}</span>
         ${hasComment ? `<span class="tag">${r.topOnly ? '只回第一層' : '含回覆留言'}</span>` : ''}
+        ${usesC ? `<span class="tag">留言：${modeName(r.mode)}</span>` : ''}
+        ${usesD ? `<span class="tag">私訊：${modeName(dmMode)}</span>` : ''}
         ${r.delayMax > 0 ? `<span class="tag">延遲 ${r.delayMin}～${r.delayMax} 秒</span>` : ''}
         ${(r.links.length || r.quick.length) ? `<span class="tag">按鈕 ${r.links.length + r.quick.length} 個</span>` : ''}
       </div>
@@ -386,6 +392,7 @@ function openEditor(id, isCopy) {
     };
   }
   R.type = typesOf(R.type).join(',');
+  if (!R.dmMode) R.dmMode = R.mode || '包含';
   while (R.links.length < 3) R.links.push({ title: '', url: '' });
   R.quickText = (R.quick || []).join(', ');
   R._titles = {};
@@ -414,6 +421,8 @@ function boolSeg(field, yes, no) {
 }
 function renderEditor() {
   const isComment = hasType('留言');
+  const isDm = hasType('私訊') || hasType('限動回覆');
+  const needKw = (isComment && R.mode !== '任何留言') || (isDm && R.dmMode !== '任何留言');
   const ids = postIds();
   const pageOpts = D.pages.map(p =>
     `<option value="${esc(p.pageId)}" ${p.pageId === R.pageId ? 'selected' : ''}>${esc(p.name)}${p.igName && !p.igOff ? '（IG：' + esc(p.igName) + '）' : ''}</option>`).join('');
@@ -457,11 +466,15 @@ function renderEditor() {
     <label>哪篇貼文</label>
     ${postBlock}
 
-    <label>比對方式</label>
-    ${seg('mode', [['包含', '包含關鍵字'], ['完全相同', '完全相同'], ['任何留言', '任何內容']])}
-    <div class="hint">包含：有出現就算。完全相同：只能剛好是這個字。任何內容：不管寫什麼都回。</div>
+    ${isComment ? `
+      <label>留言比對方式</label>
+      ${seg('mode', [['包含', '包含關鍵字'], ['完全相同', '完全相同'], ['任何留言', '任何內容']])}` : ''}
+    ${isDm ? `
+      <label>私訊比對方式${hasType('限動回覆') ? '（含限動回覆）' : ''}</label>
+      ${seg('dmMode', [['包含', '包含關鍵字'], ['完全相同', '完全相同'], ['任何留言', '任何內容']])}` : ''}
+    <div class="hint">包含：有出現就算（例如「暑假仙台團」也算）。完全相同：只能剛好是這個字。任何內容：不管寫什麼都回。</div>
 
-    ${R.mode !== '任何留言' ? `
+    ${needKw ? `
       <label>關鍵字</label>
       <input value="${esc(R.keywords)}" oninput="R.keywords=this.value" placeholder="例如：+1, 想去, 報名">
       <div class="hint">多個關鍵字用逗號分隔，任一個符合就回覆。英文不分大小寫、全形半形都可以。</div>` : ''}
