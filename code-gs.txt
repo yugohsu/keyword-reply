@@ -509,6 +509,18 @@ function observe_(info, target, jobs) {
   return parts.join(' / ');
 }
 
+// 私訊沒有附名字，要另外查（查過的記 6 小時）
+function userName_(page, platform, sid) {
+  const cache = CacheService.getScriptCache();
+  const key = 'name_' + sid;
+  const c = cache.get(key);
+  if (c !== null) return c;
+  const r = graph_('get', sid, { fields: platform === 'IG' ? 'username,name' : 'name' }, page.token);
+  const name = r.ok ? String(r.data.name || r.data.username || '') : '';
+  cache.put(key, name, 21600);
+  return name;
+}
+
 function randDelay_(rule) {
   const a = Number(rule.delayMin) || 0, b = Number(rule.delayMax) || 0;
   if (b <= 0) return 0;
@@ -614,10 +626,11 @@ function onMessage_(page, platform, m, rules, ctx) {
     return;
   }
 
-  const info = { page: page, platform: platform, who: sid, text: text || '(貼圖或圖片)', keyword: rule.hit, observe: rule.observe };
-  const jobs = [['私訊', { text: fill_(pick_(rule.dm), ''), links: rule.links, quick: rule.quick }]];
+  const name = rule.dm.indexOf('{名字}') >= 0 ? userName_(page, platform, sid) : '';
+  const info = { page: page, platform: platform, who: name || sid, text: text || '(貼圖或圖片)', keyword: rule.hit, observe: rule.observe };
+  const jobs = [['私訊', { text: fill_(pick_(rule.dm), name), links: rule.links, quick: rule.quick }]];
   const results = runJobs_(info, sid, jobs, randDelay_(rule), ctx);
-  log_([new Date(), page.name, platform, type, sid, info.text, '', rule.hit, results]);
+  log_([new Date(), page.name, platform, type, info.who, info.text, '', rule.hit, results]);
 }
 
 function runJobs_(info, target, jobs, delay, ctx) {
@@ -910,6 +923,45 @@ function loadData_() {
       sheetUrl: ss_().getUrl()
     }
   };
+}
+
+// 紀錄查詢：可依粉專、結果篩選
+function logKind_(res) {
+  res = String(res);
+  if (/失敗/.test(res)) return '失敗';
+  if (/觀察/.test(res)) return '觀察';
+  if (/未觸發/.test(res)) return '未觸發';
+  return '觸發';
+}
+
+function apiLogs(pw, opt) {
+  auth_(pw);
+  opt = opt || {};
+  const sh = sheet_(SH_LOG, LOG_HEADERS);
+  const n = sh.getLastRow();
+  const out = { rows: [], counts: { 全部: 0, 觸發: 0, 觀察: 0, 未觸發: 0, 失敗: 0 }, today: { 觸發: 0, 觀察: 0, 未觸發: 0, 失敗: 0 } };
+  if (n < 2) return out;
+  const from = Math.max(2, n - 4999);
+  const rows = sh.getRange(from, 1, n - from + 1, LOG_HEADERS.length).getValues();
+  const td = today_();
+  const limit = Math.min(Number(opt.limit) || 150, 500);
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    if (opt.page && String(r[1]) !== opt.page) continue;
+    const k = logKind_(r[8]);
+    out.counts.全部++;
+    out.counts[k]++;
+    if (r[0] instanceof Date && Utilities.formatDate(r[0], tz_(), 'yyyy-MM-dd') === td) out.today[k]++;
+    if (opt.kind && opt.kind !== k) continue;
+    if (out.rows.length < limit) {
+      out.rows.push({
+        time: r[0] instanceof Date ? fmt_(r[0]) : String(r[0]),
+        page: String(r[1]), platform: String(r[2]), type: String(r[3]), who: String(r[4]),
+        text: String(r[5]), postId: String(r[6]), keyword: String(r[7]), result: String(r[8]), kind: k
+      });
+    }
+  }
+  return out;
 }
 
 function apiSaveSettings(pw, s) {

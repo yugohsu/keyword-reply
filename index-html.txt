@@ -295,7 +295,7 @@ function showTab(t) {
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.t === t));
   if (t === 'rules') renderRules();
   if (t === 'pages') renderPages();
-  if (t === 'logs') renderLogs();
+  if (t === 'logs') { LOGS = null; renderLogs(); }
   if (t === 'settings') renderSettings();
   window.scrollTo(0, 0);
 }
@@ -729,27 +729,43 @@ async function resub(id) {
 }
 
 /* ================= 紀錄 ================= */
+let LOGF = { page: '', kind: '' };
+let LOGS = null;
 function renderLogs() {
-  const s = D.stats;
-  let h = modeBanner() + `<div class="stats">
-    <div class="card">今日成功<b style="color:var(--ok)">${s.ok}</b></div>
-    <div class="card">今日失敗<b style="color:var(--bad)">${s.fail}</b></div>
-    <div class="card">排隊中<b>${s.waiting}</b></div>
+  if (!LOGS) { loadLogs(); return; }
+  const c = LOGS.counts, t = LOGS.today;
+  const pages = [['', '全部粉專']].concat(D.pages.map(p => [p.name, p.name]));
+  const kinds = [['', '全部'], ['觸發', '有回覆'], ['觀察', '只觀察'], ['未觸發', '未觸發'], ['失敗', '失敗']];
+  let h = modeBanner() + `
+  <div class="card">
+    <label style="margin-top:0">看哪個粉專</label>
+    <div class="seg">` + pages.map(([v, l]) =>
+      `<button class="${LOGF.page === v ? 'on' : ''}" onclick="setLogF('page', ${JSON.stringify(v).replace(/"/g, '&quot;')})">${esc(l)}</button>`).join('') + `</div>
+    <label>看哪種結果</label>
+    <div class="seg">` + kinds.map(([v, l]) =>
+      `<button class="${LOGF.kind === v ? 'on' : ''}" onclick="setLogF('kind', '${v}')">${l}${v ? '（' + (c[v] || 0) + '）' : '（' + c['全部'] + '）'}</button>`).join('') + `</div>
+  </div>
+  <div class="stats">
+    <div class="card">今日回覆<b style="color:var(--ok)">${t['觸發']}</b></div>
+    <div class="card">今日觀察<b style="color:var(--tint-ink)">${t['觀察']}</b></div>
+    <div class="card">今日未觸發<b style="color:var(--muted)">${t['未觸發']}</b></div>
+    <div class="card">今日失敗<b style="color:var(--bad)">${t['失敗']}</b></div>
   </div>
   <div class="row" style="margin:0 0 14px">
-    <button class="btn pri" onclick="refresh()">重新整理</button>
-    ${s.waiting ? `<button class="btn pri" onclick="runQueue()">立即處理排隊</button>` : ''}
+    <button class="btn pri" onclick="refreshLogs()">重新整理</button>
+    ${D.stats.waiting ? `<button class="btn pri" onclick="runQueue()">立即處理排隊（${D.stats.waiting}）</button>` : ''}
   </div>
-  <div class="card"><h2>最近紀錄</h2>`;
-  if (!D.logs.length) h += `<div class="hint">還沒有紀錄。</div>`;
+  <div class="card"><h2>${LOGF.page ? esc(LOGF.page) : '全部粉專'}　最近紀錄</h2>
+  <div class="hint">最多顯示最近 150 筆；完整紀錄在雲端硬碟的「關鍵字自動回覆_資料」試算表。</div>`;
+  if (!LOGS.rows.length) h += `<div class="hint">沒有符合的紀錄。</div>`;
   else {
     h += `<table><tr><th>時間</th><th>來源</th><th>內容</th><th>結果</th></tr>`;
-    D.logs.forEach(l => {
-      const color = /失敗/.test(l.result) ? 'var(--bad)' : /觀察/.test(l.result) ? 'var(--tint-ink)' :
-        /未觸發/.test(l.result) ? 'var(--muted)' : /排隊|排程|延遲/.test(l.result) ? 'var(--warn)' : 'var(--ok)';
+    LOGS.rows.forEach(l => {
+      const color = l.kind === '失敗' ? 'var(--bad)' : l.kind === '觀察' ? 'var(--tint-ink)' :
+        l.kind === '未觸發' ? 'var(--muted)' : /排隊|排程|延遲/.test(l.result) ? 'var(--warn)' : 'var(--ok)';
       h += `<tr>
         <td>${esc(l.time)}</td>
-        <td>${esc(l.page)}<br>${esc(l.platform)} ${esc(l.type)}<br>${esc(l.who)}</td>
+        <td>${LOGF.page ? '' : esc(l.page) + '<br>'}${esc(l.platform)} ${esc(l.type)}<br>${esc(l.who)}</td>
         <td>${esc(l.text)}<br><span style="color:var(--tint-ink)">${esc(l.keyword)}</span></td>
         <td style="color:${color}">${esc(l.result)}</td>
       </tr>`;
@@ -759,6 +775,21 @@ function renderLogs() {
   h += `</div>`;
   $('main').innerHTML = h;
 }
+async function loadLogs() {
+  LOGS = await call('apiLogs', PW, { page: LOGF.page, kind: LOGF.kind });
+  if (TAB === 'logs') renderLogs();
+}
+function setLogF(field, v) {
+  LOGF[field] = v;
+  LOGS = null;
+  renderLogs();
+}
+async function refreshLogs() {
+  D = await call('apiLoad', PW);
+  LOGS = null;
+  renderLogs();
+  toast('已更新');
+}
 async function refresh() {
   D = await call('apiLoad', PW);
   showTab(TAB);
@@ -766,6 +797,7 @@ async function refresh() {
 }
 async function runQueue() {
   D = await call('apiProcessQueueNow', PW);
+  LOGS = null;
   renderLogs();
   toast('處理完成');
 }
