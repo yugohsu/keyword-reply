@@ -1396,7 +1396,7 @@ function apiResendLog(pw, logRow) {
   const platform = String(r[2]), who = String(r[4]), text = String(r[5]), postId = String(r[6]);
 
   // 1. 在貼文底下找這個人的這則留言
-  const cid = findComment_(page, platform, postId, who, text);
+  const cid = findComment_(page, platform, postId, who, text, r[0] instanceof Date ? r[0].getTime() : 0);
   if (!cid) throw new Error('在貼文底下找不到「' + who + '」留的「' + text + '」，可能留言被刪除了，請手動私訊');
 
   // 2. 找出當時符合的規則，組出要回的內容
@@ -1426,12 +1426,14 @@ function apiResendLog(pw, logRow) {
   return { data: loadData_(), failed: apiFailed(pw), msg: allOk ? '已重送成功' : '還是失敗：' + out.join(' / ') };
 }
 
-function findComment_(page, platform, postId, who, text) {
+// 先用「名字 + 內容」找；Meta 沒給名字時，改用「內容 + 留言時間（紀錄時間前後 5 分鐘）」找
+function findComment_(page, platform, postId, who, text, logMs) {
   const want = norm_(text).trim();
-  let path = postId + (platform === 'IG' ? '/comments' : '/comments');
+  const byTime = [];
+  let path = postId + '/comments';
   let params = platform === 'IG'
-    ? { fields: 'id,text,username', limit: 100 }
-    : { fields: 'id,message,from{id,name}', limit: 100, filter: 'stream', order: 'reverse_chronological' };
+    ? { fields: 'id,text,username,timestamp', limit: 100 }
+    : { fields: 'id,message,from{id,name},created_time', limit: 100, filter: 'stream', order: 'reverse_chronological' };
   for (let pageNo = 0; pageNo < 10; pageNo++) {
     const g = graph_('get', path, params, page.token);
     if (!g.ok) throw new Error('讀取貼文留言失敗：' + g.msg);
@@ -1440,12 +1442,18 @@ function findComment_(page, platform, postId, who, text) {
       const c = list[i];
       const name = platform === 'IG' ? c.username : (c.from && c.from.name);
       const msg = platform === 'IG' ? c.text : c.message;
-      if (String(name || '') === who && norm_(String(msg || '')).trim() === want) return c.id;
+      if (norm_(String(msg || '')).trim() !== want) continue;
+      if (String(name || '') === who) return c.id;
+      const ct = Date.parse(String(c.created_time || c.timestamp || '').replace(/\+0000$/, 'Z'));
+      if (logMs && ct && Math.abs(ct - logMs) <= 300000) byTime.push({ id: c.id, gap: Math.abs(ct - logMs), named: !!name });
     }
     const next = g.data.paging && g.data.paging.cursors && g.data.paging.next ? g.data.paging.cursors.after : '';
     if (!next) break;
     params = Object.assign({}, params, { after: next });
   }
+  // 沒有名字可以對時，取時間最接近、而且沒有名字（被 Meta 隱藏）的那則
+  const cands = byTime.filter(function (c) { return !c.named; }).sort(function (a, b) { return a.gap - b.gap; });
+  if (cands.length === 1 || (cands.length > 1 && cands[1].gap - cands[0].gap > 20000)) return cands[0].id;
   return '';
 }
 
