@@ -775,6 +775,7 @@ function renderLogs() {
     <button class="btn pri" onclick="refreshLogs()">重新整理</button>
     ${D.stats.waiting ? `<button class="btn pri" onclick="runQueue()">立即處理排隊（${D.stats.waiting}）</button>` : ''}
   </div>
+  ${failedCard()}
   <div class="card"><h2>${LOGF.page ? esc(LOGF.page) : '全部粉專'}　最近紀錄</h2>
   <div class="hint">這裡最多顯示最近 150 筆；全部紀錄請按上面的「打開完整紀錄」。</div>`;
   if (!LOGS.rows.length) h += `<div class="hint">沒有符合的紀錄。</div>`;
@@ -795,14 +796,44 @@ function renderLogs() {
   h += `</div>`;
   $('main').innerHTML = h;
 }
+let FAILED = [];
 async function loadLogs() {
-  LOGS = await call('apiLogs', PW, { page: LOGF.page, kind: LOGF.kind });
+  const res = await Promise.all([call('apiLogs', PW, { page: LOGF.page, kind: LOGF.kind }), call('apiFailed', PW)]);
+  LOGS = res[0];
+  FAILED = res[1] || [];
   if (TAB === 'logs') renderLogs();
 }
 function setLogF(field, v) {
   LOGF[field] = v;
   LOGS = null;
   renderLogs();
+}
+function failedCard() {
+  const list = FAILED.filter(f => !LOGF.page || f.page === LOGF.page);
+  if (!list.length) return '';
+  let h = `<div class="card" style="border:3px solid var(--bad)">
+    <h2 style="color:var(--bad)">沒送出去的訊息（${list.length}）</h2>
+    <div class="hint">最近 7 天送失敗的訊息。按「重送」會再送一次；如果還是失敗，看紅字原因。</div>
+    <button class="big" style="margin:6px 0 14px" onclick="resend(${JSON.stringify(list.map(f => f.row))})">全部重送</button>`;
+  list.forEach(f => {
+    h += `<div style="border-top:1px solid var(--line);padding:12px 0">
+      <div style="font-size:18px;font-weight:900">${esc(f.who || '(沒有名字)')}　<span style="font-size:15px;color:var(--muted)">${esc(f.time)}</span></div>
+      <div>${esc(f.page)}　${esc(f.platform)}　${f.action === '公開' ? '公開回覆' : '私訊'}</div>
+      <div>對方寫：${esc(f.text)}</div>
+      <div style="color:var(--bad)">${esc(f.result)}</div>
+      <button class="btn pri" style="margin-top:8px" onclick="resend([${f.row}])">重送</button>
+    </div>`;
+  });
+  return h + `</div>`;
+}
+async function resend(rows) {
+  toast('重送中…', 8000);
+  const res = await call('apiResend', PW, rows);
+  D = res.data;
+  FAILED = res.failed || [];
+  LOGS = null;
+  await loadLogs();
+  toast(FAILED.some(f => rows.includes(f.row)) ? '有些還是失敗，請看紅字原因' : D.stats.waiting ? '已重送；Meta 忙碌的會在 1 分鐘後自動再試' : '已重送成功', 4500);
 }
 async function refreshLogs() {
   D = await call('apiLoad', PW);

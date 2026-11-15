@@ -297,15 +297,22 @@ function sendReq_(page, platform, action, target, msg, plain) {
   };
 }
 
+// 送出單一請求（UrlFetchApp.fetch 要「網址 + 設定」分開給）
+function fetchOne_(req) {
+  const opt = {};
+  Object.keys(req).forEach(function (k) { if (k !== 'url') opt[k] = req[k]; });
+  return UrlFetchApp.fetch(req.url, opt);
+}
+
 function hasButtons_(msg) {
   return !!((msg.links && msg.links.length) || (msg.quick && msg.quick.length));
 }
 
 // 按鈕被拒絕（例如 IG 不支援某種格式）→ 改送純文字
 function retryPlain_(page, platform, action, target, msg, r) {
-  if (r.ok || action === '公開' || !hasButtons_(msg) || r.rateLimited || r.tokenBad) return r;
+  if (r.ok || action === '公開' || !hasButtons_(msg) || r.rateLimited || r.tokenBad || r.transient) return r;
   let r2;
-  try { r2 = parse_(UrlFetchApp.fetch(sendReq_(page, platform, action, target, msg, true))); }
+  try { r2 = parse_(fetchOne_(sendReq_(page, platform, action, target, msg, true))); }
   catch (e) { return r; }
   if (r2.ok) { r2.note = '（按鈕不支援，已改送文字）'; return r2; }
   return r;
@@ -313,7 +320,7 @@ function retryPlain_(page, platform, action, target, msg, r) {
 
 function send_(page, platform, action, target, msg) {
   let r;
-  try { r = parse_(UrlFetchApp.fetch(sendReq_(page, platform, action, target, msg, false))); }
+  try { r = parse_(fetchOne_(sendReq_(page, platform, action, target, msg, false))); }
   catch (e) { r = fetchErr_(e); }
   return retryPlain_(page, platform, action, target, msg, r);
 }
@@ -747,19 +754,21 @@ function handleResult_(info, action, target, msg, r) {
     return 'Meta 暫時忙碌，1 分鐘後自動重送';
   }
   if (r.tokenBad) tokenAlert_(info.page, r.msg);
+  // 記到排隊表（狀態「失敗」），之後可以在「紀錄」分頁按「重送」
+  try { enqueue_(info, action, target, msg, new Date(), r.msg); } catch (e) {}
   return '失敗 ' + r.msg;
 }
 
 /* =========================================================
  *  排隊（延遲回覆、超過上限補發）每分鐘自動執行
  * ========================================================= */
-function enqueue_(info, action, target, msg, due) {
+function enqueue_(info, action, target, msg, due, failMsg) {
   sheet_(SH_QUEUE, QUEUE_HEADERS).appendRow([
     new Date(), due || new Date(), txt_(info.page.pageId), info.platform, action, txt_(String(target)),
     txt_(JSON.stringify(msg)), txt_(String(info.who || '')), txt_(String(info.text || '')),
-    txt_(String(info.keyword || '')), '等待', '', 0
+    txt_(String(info.keyword || '')), failMsg ? '失敗' : '等待', failMsg ? txt_(failMsg) : '', failMsg ? 1 : 0
   ]);
-  setProp_('QUEUE_HAS', '1');
+  if (!failMsg) setProp_('QUEUE_HAS', '1');
 }
 
 function processQueue() {
@@ -1279,6 +1288,47 @@ function apiTestRule(pw, rule, text, isReply) {
     if (m.quick.length) s += '\n快速回覆按鈕：' + m.quick.map(function (q) { return '［' + q + '］'; }).join(' ');
   }
   return s;
+}
+
+// 失敗的訊息清單（最近 7 天，留言私訊超過 7 天 Meta 就不給送了）
+function apiFailed(pw) {
+  auth_(pw);
+  const sh = sheet_(SH_QUEUE, QUEUE_HEADERS);
+  const n = sh.getLastRow();
+  if (n < 2) return [];
+  const data = sh.getRange(2, 1, n - 1, QUEUE_HEADERS.length).getValues();
+  const pages = getPages_();
+  const limit = Date.now() - 7 * 86400000;
+  const out = [];
+  for (let i = data.length - 1; i >= 0 && out.length < 50; i--) {
+    const r = data[i];
+    if (r[Q.status] !== '失敗') continue;
+    const t = r[Q.added] instanceof Date ? r[Q.added].getTime() : 0;
+    if (t && t < limit) continue;
+    const pg = pages.find(function (p) { return p.pageId === String(r[Q.pageId]); });
+    out.push({
+      row: i + 2, time: t ? fmt_(r[Q.added]) : '', page: pg ? pg.name : String(r[Q.pageId]),
+      platform: String(r[Q.platform]), action: String(r[Q.action]), who: String(r[Q.who]),
+      text: String(r[Q.text]), result: String(r[Q.result])
+    });
+  }
+  return out;
+}
+
+// 重送：把指定的失敗訊息改回「等待」，馬上處理
+function apiResend(pw, rows) {
+  auth_(pw);
+  const sh = sheet_(SH_QUEUE, QUEUE_HEADERS);
+  (rows || []).forEach(function (row) {
+    row = Number(row);
+    if (row < 2 || row > sh.getLastRow()) return;
+    if (sh.getRange(row, Q.status + 1).getValue() !== '失敗') return;
+    sh.getRange(row, Q.due + 1).setValue(new Date());
+    sh.getRange(row, Q.status + 1, 1, 3).setValues([['等待', '手動重送', 0]]);
+  });
+  setProp_('QUEUE_HAS', '1');
+  processQueue();
+  return { data: loadData_(), failed: apiFailed(pw) };
 }
 
 function apiProcessQueueNow(pw) {
