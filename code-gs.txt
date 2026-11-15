@@ -771,6 +771,36 @@ function enqueue_(info, action, target, msg, due, failMsg) {
   if (!failMsg) setProp_('QUEUE_HAS', '1');
 }
 
+// 找出同一個人、同一段內容的失敗紀錄，改成「已重送成功」
+function clearFailLog_(pageName, who, text) {
+  const sh = sheet_(SH_LOG, LOG_HEADERS);
+  const n = sh.getLastRow();
+  if (n < 2) return;
+  const from = Math.max(2, n - 2999);
+  const rng = sh.getRange(from, 1, n - from + 1, LOG_HEADERS.length);
+  const rows = rng.getValues();
+  const when = Utilities.formatDate(new Date(), tz_(), 'MM/dd HH:mm');
+  rows.forEach(function (r, i) {
+    const res = String(r[8]);
+    if (String(r[1]) !== pageName || String(r[4]) !== who || String(r[5]) !== text) return;
+    if (!/失敗/.test(res) || /已重送成功/.test(res)) return;
+    sh.getRange(from + i, 9).setValue('已重送成功（' + when + '）｜原本：' + res);
+  });
+}
+
+// 一次性：之前已經重送成功的，把原本的失敗紀錄也改掉
+function fixResentLogs_() {
+  const sh = sheet_(SH_QUEUE, QUEUE_HEADERS);
+  const n = sh.getLastRow();
+  if (n < 2) return;
+  const pages = getPages_();
+  sh.getRange(2, 1, n - 1, QUEUE_HEADERS.length).getValues().forEach(function (r) {
+    if (r[Q.status] !== '完成') return;
+    const pg = pages.find(function (p) { return p.pageId === String(r[Q.pageId]); });
+    if (pg) clearFailLog_(pg.name, String(r[Q.who]), String(r[Q.text]));
+  });
+}
+
 function processQueue() {
   if (prop_('QUEUE_HAS') !== '1') return;
   const lock = LockService.getScriptLock();
@@ -804,7 +834,13 @@ function processQueue() {
         status = '失敗'; result = '找不到粉專';
       } else {
         const res = send_(page, String(r[Q.platform]), String(r[Q.action]), String(r[Q.target]), msg);
-        if (res.ok) { status = '完成'; result = '成功' + (res.note || ''); sent++; }
+        if (res.ok) {
+          status = '完成'; result = '成功' + (res.note || ''); sent++;
+          // 重送成功 → 把原本那筆失敗紀錄改成「已重送成功」，不再算失敗
+          if (tries > 1 || String(r[Q.result]) === '手動重送') {
+            try { clearFailLog_(page.name, String(r[Q.who]), String(r[Q.text])); } catch (e) {}
+          }
+        }
         else if (res.rateLimited) { cache.put('rl_' + pid, '1', 600); status = '等待'; result = '達上限，稍後再試'; }
         else {
           if (res.tokenBad) tokenAlert_(page, res.msg);
@@ -908,6 +944,10 @@ function ensureSetup_() {
   }
   sheet_(SH_LOG, LOG_HEADERS);
   sheet_(SH_QUEUE, QUEUE_HEADERS);
+  if (prop_('FIX_RESENT') !== '1') {
+    setProp_('FIX_RESENT', '1');
+    try { fixResentLogs_(); } catch (e) {}
+  }
   if (!prop_('VERIFY_TOKEN')) setProp_('VERIFY_TOKEN', 'yugo' + Utilities.getUuid().replace(/-/g, '').slice(0, 16));
   ensureTriggers_();
 }
@@ -958,7 +998,7 @@ function loadData_() {
       if (Utilities.formatDate(r[0], tz_(), 'yyyy-MM-dd') !== td) return;
       const res = String(r[8]);
       ok += (res.match(/成功/g) || []).length;
-      fail += (res.match(/失敗/g) || []).length;
+      if (!/已重送成功/.test(res)) fail += (res.match(/失敗/g) || []).length;
     });
     logs = rows.slice(-60).reverse().map(function (r) {
       return {
@@ -1006,6 +1046,7 @@ function loadData_() {
 // 紀錄查詢：可依粉專、結果篩選
 function logKind_(res) {
   res = String(res);
+  if (/已重送成功/.test(res)) return '觸發';
   if (/失敗/.test(res)) return '失敗';
   if (/觀察/.test(res)) return '觀察';
   if (/未觸發/.test(res)) return '未觸發';
