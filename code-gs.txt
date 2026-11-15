@@ -29,7 +29,7 @@ const SH_QUEUE = '排隊';
 
 const RULE_HEADERS = ['規則ID', '啟用', '粉專ID', '平台', '類型', '貼文ID', '貼文摘要', '關鍵字',
   '比對方式', '公開回覆', '私訊內容', '排除關鍵字', '只回第一層', '開始時間', '結束時間',
-  '延遲最少秒', '延遲最多秒', '按鈕', '建立時間', '只觀察', '私訊比對方式'];
+  '延遲最少秒', '延遲最多秒', '按鈕', '建立時間', '只觀察', '私訊比對方式', '同一人只回一次'];
 const LOG_HEADERS = ['時間', '粉專', '平台', '類型', '對象', '內容', '貼文ID', '符合關鍵字', '結果'];
 const QUEUE_HEADERS = ['加入時間', '預定時間', '粉專ID', '平台', '動作', '目標ID', '訊息', '對象',
   '原文', '關鍵字', '狀態', '結果', '嘗試次數'];
@@ -202,7 +202,20 @@ function graph_(method, path, params, token) {
 
 function fetchErr_(e) {
   const s = String(e);
-  return { ok: false, rateLimited: /too many|頻繁|次數/i.test(s), msg: s };
+  const rl = /too many|頻繁|次數/i.test(s);
+  return { ok: false, rateLimited: rl, transient: !rl, msg: '連線逾時或中斷：' + s };
+}
+
+// 常見錯誤翻成中文，方便看紀錄
+function errText_(code, sub, message) {
+  if (code === 1 || code === 2 || code === -1) return 'Meta 暫時忙碌';
+  if (code === 190) return '權杖失效，請到「粉專」重新匯入';
+  if (code === 10 || code === 200 || code === 230) return '沒有權限，或已超過可以回覆的期限（留言私訊限 7 天內）';
+  if (code === 551 || sub === 1545041) return '對方目前無法接收訊息（可能封鎖粉專或關閉訊息）';
+  if (sub === 2018278 || sub === 2018108) return '超過可以回覆的期限';
+  if (code === 100) return '訊息格式或對象有問題（例如這則留言已經私訊過、留言被刪除）';
+  if (RATE_LIMIT_CODES.indexOf(code) >= 0) return '達到 Meta 速度上限';
+  return '';
 }
 
 // 解析 Meta 的回應
@@ -214,11 +227,16 @@ function parse_(res) {
   const er = data.error || {};
   const rl = RATE_LIMIT_CODES.indexOf(er.code) >= 0 || er.error_subcode === 2534040 ||
     /rate limit|limit reached|too many/i.test(er.message || '');
+  // Meta 那邊暫時出錯（不是我們的問題），重送通常就會成功
+  const transient = !rl && (er.is_transient === true || er.code === 1 || er.code === 2 || er.code === -1 ||
+    (!er.code && code >= 500));
+  const zh = errText_(er.code, er.error_subcode, er.message);
   return {
     ok: false,
     rateLimited: rl,
+    transient: transient,
     tokenBad: er.code === 190,
-    msg: '(' + (er.code || code) + ') ' + (er.message || res.getContentText().slice(0, 200))
+    msg: '(' + (er.code || code) + ') ' + (zh ? zh + '｜' : '') + (er.message || res.getContentText().slice(0, 200))
   };
 }
 
@@ -346,7 +364,10 @@ function normRule_(r) {
     delayMax: dmax,
     links: links,
     quick: quick,
-    observe: r.observe === true || String(r.observe).toUpperCase() === 'Y'
+    observe: r.observe === true || String(r.observe).toUpperCase() === 'Y',
+    // 沒設定過的舊規則，預設也是「同一人只回一次」
+    once: r.once === undefined || r.once === '' || r.once === null ? true :
+      (r.once === true || String(r.once).toUpperCase() === 'Y')
   };
   o.startMs = parseTime_(o.startAt);
   o.endMs = parseTime_(o.endAt);
@@ -398,7 +419,7 @@ function getRules_() {
       postText: r[6], keywords: r[7], mode: r[8], publicReply: r[9], dm: r[10], exclude: r[11],
       topOnly: r[12], startAt: r[13] instanceof Date ? Utilities.formatDate(r[13], tz_(), "yyyy-MM-dd'T'HH:mm") : r[13],
       endAt: r[14] instanceof Date ? Utilities.formatDate(r[14], tz_(), "yyyy-MM-dd'T'HH:mm") : r[14],
-      delayMin: r[15], delayMax: r[16], buttons: r[17], observe: r[19], dmMode: r[20]
+      delayMin: r[15], delayMax: r[16], buttons: r[17], observe: r[19], dmMode: r[20], once: r[21]
     });
     o.created = r[18] ? fmt_(r[18]) : '';
     return o;
@@ -448,6 +469,7 @@ function samePost_(a, b) {
 function matchRule_(rules, ev, ignoreTime) {
   const t = norm_(ev.text);
   const now = Date.now();
+  let anyRule = null;
   for (let i = 0; i < rules.length; i++) {
     const r = rules[i];
     if (!r.enabled) continue;
@@ -468,7 +490,8 @@ function matchRule_(rules, ev, ignoreTime) {
 
     // 留言用「留言比對方式」，私訊和限動回覆用「私訊比對方式」
     const md = ev.type === '留言' ? r.mode : (r.dmMode || r.mode);
-    if (md === '任何留言') return Object.assign({ hit: '(任何內容)' }, r);
+    // 「任何內容」的規則先記下來，最後才用：有關鍵字符合的規則優先
+    if (md === '任何留言') { if (!anyRule) anyRule = Object.assign({ hit: '(任何內容)' }, r); continue; }
 
     const kws = splitKw_(r.keywords);
     for (let j = 0; j < kws.length; j++) {
@@ -478,7 +501,23 @@ function matchRule_(rules, ev, ignoreTime) {
       if (ok) return Object.assign({ hit: kws[j] }, r);
     }
   }
-  return null;
+  return anyRule;
+}
+
+// 同一人只回一次：同一條規則、同一個人（留言再加上同一篇貼文），6 小時內只回第一次
+function onceKey_(rule, who, postId) {
+  return 'once_' + (rule.id || 'x') + '_' + who + (postId ? '_' + postId : '');
+}
+function repliedBefore_(rule, who, postId) {
+  if (!rule.once || !who) return false;
+  return CacheService.getScriptCache().get(onceKey_(rule, who, postId)) !== null;
+}
+function unmark_(rule, who, postId) {
+  if (rule.once && who) CacheService.getScriptCache().remove(onceKey_(rule, who, postId));
+}
+function markReplied_(rule, who, postId, info) {
+  if (!rule.once || !who || isObserve_() || info.observe) return;
+  CacheService.getScriptCache().put(onceKey_(rule, who, postId), '1', 21600);
 }
 
 /* ---------- 觀察模式 ---------- */
@@ -601,11 +640,18 @@ function onComment_(page, platform, ch, rules, ctx) {
   }
 
   const info = { page: page, platform: platform, who: name, text: text, keyword: rule.hit, observe: rule.observe };
+  if (repliedBefore_(rule, fromId, postId)) {
+    log_([new Date(), page.name, platform, isReply ? '留言(回覆)' : '留言', name, text, postId, rule.hit,
+      '未觸發：同一人在這篇貼文 6 小時內已經回過（規則設定同一人只回一次）']);
+    return;
+  }
+  markReplied_(rule, fromId, postId, info);
   const jobs = [];
   if (rule.publicReply) jobs.push(['公開', { text: fill_(pick_(rule.publicReply), name) }]);
   if (rule.dm) jobs.push(['私訊留言', { text: fill_(pick_(rule.dm), name), links: rule.links, quick: rule.quick }]);
 
   const results = runJobs_(info, cid, jobs, randDelay_(rule), ctx);
+  if (/失敗/.test(results) && !/成功|排隊|排程|重送/.test(results)) unmark_(rule, fromId, postId);
   log_([new Date(), page.name, platform, isReply ? '留言(回覆)' : '留言', name, text, postId, rule.hit, results]);
 }
 
@@ -624,15 +670,22 @@ function onMessage_(page, platform, m, rules, ctx) {
   let rule = matchRule_(rules, Object.assign({ type: type }, base));
   if (!rule && isStory) rule = matchRule_(rules, Object.assign({ type: '私訊' }, base)); // 沒有限動規則就用私訊規則
   if (!rule || !rule.dm) {
-    if (isLogAll_()) log_([new Date(), page.name, platform, type, sid, text || '(貼圖或圖片)', '', '',
+    if (isLogAll_()) log_([new Date(), page.name, platform, type, userName_(page, platform, sid) || sid, text || '(貼圖或圖片)', '', '',
       '未觸發：' + (rule ? '規則沒有填私訊內容' : missReason_(rules, Object.assign({ type: type }, base)))]);
     return;
   }
 
-  const name = rule.dm.indexOf('{名字}') >= 0 ? userName_(page, platform, sid) : '';
+  const name = userName_(page, platform, sid);
   const info = { page: page, platform: platform, who: name || sid, text: text || '(貼圖或圖片)', keyword: rule.hit, observe: rule.observe };
+  if (repliedBefore_(rule, sid, '')) {
+    log_([new Date(), page.name, platform, type, info.who, info.text, '', rule.hit,
+      '未觸發：同一人 6 小時內已經回過（規則設定同一人只回一次）']);
+    return;
+  }
+  markReplied_(rule, sid, '', info);
   const jobs = [['私訊', { text: fill_(pick_(rule.dm), name), links: rule.links, quick: rule.quick }]];
   const results = runJobs_(info, sid, jobs, randDelay_(rule), ctx);
+  if (/失敗/.test(results) && !/成功|排隊|排程|重送/.test(results)) unmark_(rule, sid, '');
   log_([new Date(), page.name, platform, type, info.who, info.text, '', rule.hit, results]);
 }
 
@@ -669,7 +722,13 @@ function runJobs_(info, target, jobs, delay, ctx) {
   }
 
   jobs.forEach(function (j, i) {
-    const r = retryPlain_(info.page, info.platform, j[0], target, j[1], results[i]);
+    let r = retryPlain_(info.page, info.platform, j[0], target, j[1], results[i]);
+    // Meta 暫時出錯 → 等 1.5 秒馬上重送一次
+    if (!r.ok && r.transient) {
+      Utilities.sleep(1500);
+      r = send_(info.page, info.platform, j[0], target, j[1]);
+      if (r.ok) r.note = (r.note || '') + '（第一次 Meta 忙碌，重送成功）';
+    }
     out.push((j[0] === '公開' ? '公開:' : '私訊:') + handleResult_(info, j[0], target, j[1], r));
   });
   return out.join(' / ');
@@ -681,6 +740,11 @@ function handleResult_(info, action, target, msg, r) {
     CacheService.getScriptCache().put('rl_' + info.page.pageId, '1', 600); // 暫停 10 分鐘，期間全部改排隊
     enqueue_(info, action, target, msg, new Date());
     return '達上限，排隊中';
+  }
+  if (r.transient) {
+    // 還是失敗 → 1 分鐘後由排隊自動再送（最多再試 3 次）
+    enqueue_(info, action, target, msg, new Date(Date.now() + 60000));
+    return 'Meta 暫時忙碌，1 分鐘後自動重送';
   }
   if (r.tokenBad) tokenAlert_(info.page, r.msg);
   return '失敗 ' + r.msg;
@@ -735,7 +799,7 @@ function processQueue() {
         else if (res.rateLimited) { cache.put('rl_' + pid, '1', 600); status = '等待'; result = '達上限，稍後再試'; }
         else {
           if (res.tokenBad) tokenAlert_(page, res.msg);
-          status = tries >= 3 || res.tokenBad ? '失敗' : '等待';
+          status = tries >= (res.transient ? 5 : 3) || res.tokenBad ? '失敗' : '等待';
           result = res.msg;
         }
       }
@@ -745,7 +809,7 @@ function processQueue() {
         if (firstWaiting < 0) firstWaiting = i;
       } else {
         log_([new Date(), page ? page.name : pid, String(r[Q.platform]), '排隊送出', String(r[Q.who]),
-          String(r[Q.text]), '', String(r[Q.keyword]), String(r[Q.action]) + ':' + result]);
+          String(r[Q.text]), '', String(r[Q.keyword]), String(r[Q.action]) + ':' + (status === '失敗' ? '失敗 ' : '') + result]);
       }
     }
     if (stillWaiting === 0) setProp_('QUEUE_HAS', '0');
@@ -1133,7 +1197,7 @@ function apiSaveRule(pw, rule) {
     txt_(r.id || Utilities.getUuid().slice(0, 8)), r.enabled ? 'Y' : 'N', txt_(r.pageId), r.platform, r.type,
     txt_(r.postId), txt_(r.postText), txt_(r.keywords), r.mode, txt_(r.publicReply), txt_(r.dm),
     txt_(r.exclude), r.topOnly ? 'Y' : 'N', txt_(r.startAt), txt_(r.endAt), r.delayMin, r.delayMax,
-    txt_(JSON.stringify({ links: r.links, quick: r.quick })), new Date(), r.observe ? 'Y' : 'N', r.dmMode
+    txt_(JSON.stringify({ links: r.links, quick: r.quick })), new Date(), r.observe ? 'Y' : 'N', r.dmMode, r.once ? 'Y' : 'N'
   ];
   let done = false;
   if (r.id) {

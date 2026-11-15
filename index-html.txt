@@ -345,6 +345,7 @@ function renderRules() {
         ${hasComment ? `<span class="tag">${r.topOnly ? '只回第一層' : '含回覆留言'}</span>` : ''}
         ${usesC ? `<span class="tag">留言：${modeName(r.mode)}</span>` : ''}
         ${usesD ? `<span class="tag">私訊：${modeName(dmMode)}</span>` : ''}
+        <span class="tag">${r.once === false ? '同一人每次都回' : '同一人只回一次'}</span>
         ${r.delayMax > 0 ? `<span class="tag">延遲 ${r.delayMin}～${r.delayMax} 秒</span>` : ''}
         ${(r.links.length || r.quick.length) ? `<span class="tag">按鈕 ${r.links.length + r.quick.length} 個</span>` : ''}
       </div>
@@ -388,11 +389,12 @@ function openEditor(id, isCopy) {
     R = {
       id: '', enabled: true, pageId: D.pages[0].pageId, platform: 'FB', type: '留言',
       postId: '', postText: '', keywords: '', mode: '包含', publicReply: '', dm: '', exclude: '',
-      topOnly: true, startAt: '', endAt: '', delayMin: 0, delayMax: 0, links: [], quick: [], observe: false
+      topOnly: true, startAt: '', endAt: '', delayMin: 0, delayMax: 0, links: [], quick: [], observe: false, once: true
     };
   }
   R.type = typesOf(R.type).join(',');
   if (!R.dmMode) R.dmMode = R.mode || '包含';
+  if (R.once === undefined) R.once = true;
   while (R.links.length < 3) R.links.push({ title: '', url: '' });
   R.quickText = (R.quick || []).join(', ');
   R._titles = {};
@@ -478,6 +480,10 @@ function renderEditor() {
       <label>關鍵字</label>
       <input value="${esc(R.keywords)}" oninput="R.keywords=this.value" placeholder="例如：+1, 想去, 報名">
       <div class="hint">多個關鍵字用逗號分隔，任一個符合就回覆。英文不分大小寫、全形半形都可以。</div>` : ''}
+
+    <label>同一個人重複觸發</label>
+    ${boolSeg('once', '只回第一次', '每次都回')}
+    <div class="hint">只回第一次：同一個人 6 小時內在同一篇貼文重複留言、或重複私訊，只會回第一次，避免對方一直收到同樣的訊息。「任何內容」的私訊規則特別建議開著，不然對話中每句話都會被自動回覆。</div>
 
     <label>排除關鍵字（可不填）</label>
     <input value="${esc(R.exclude)}" oninput="R.exclude=this.value" placeholder="例如：取消, 不要">
