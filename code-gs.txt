@@ -1336,8 +1336,7 @@ function apiFailed(pw) {
   auth_(pw);
   const sh = sheet_(SH_QUEUE, QUEUE_HEADERS);
   const n = sh.getLastRow();
-  if (n < 2) return [];
-  const data = sh.getRange(2, 1, n - 1, QUEUE_HEADERS.length).getValues();
+  const data = n >= 2 ? sh.getRange(2, 1, n - 1, QUEUE_HEADERS.length).getValues() : [];
   const pages = getPages_();
   const limit = Date.now() - 7 * 86400000;
   const out = [];
@@ -1353,7 +1352,101 @@ function apiFailed(pw) {
       text: String(r[Q.text]), result: String(r[Q.result])
     });
   }
+  return out.concat(oldFailed_(data, pages, limit));
+}
+
+// 紀錄裡有失敗、但排隊表沒有資料的留言（舊版程式的失敗）→ 可以「找回留言再重送」
+function oldFailed_(qdata, pages, limit) {
+  const inQueue = {};
+  qdata.forEach(function (r) { inQueue[String(r[Q.who]) + '|' + String(r[Q.text])] = 1; });
+  const sh = sheet_(SH_LOG, LOG_HEADERS);
+  const n = sh.getLastRow();
+  if (n < 2) return [];
+  const from = Math.max(2, n - 2999);
+  const rows = sh.getRange(from, 1, n - from + 1, LOG_HEADERS.length).getValues();
+  const out = [];
+  for (let i = rows.length - 1; i >= 0 && out.length < 30; i--) {
+    const r = rows[i];
+    const t = r[0] instanceof Date ? r[0].getTime() : 0;
+    if (!t || t < limit) continue;
+    const res = String(r[8]);
+    if (!/^留言/.test(String(r[3])) || !String(r[6])) continue;
+    if (!/(公開|私訊):失敗/.test(res) || /已重送成功/.test(res)) continue;
+    if (inQueue[String(r[4]) + '|' + String(r[5])]) continue;
+    out.push({
+      logRow: from + i, time: fmt_(r[0]), page: String(r[1]), platform: String(r[2]),
+      action: /私訊:失敗/.test(res) ? '私訊' : '公開', who: String(r[4]), text: String(r[5]),
+      result: res.replace(/^.*?((公開|私訊):失敗)/, '$1')
+    });
+  }
   return out;
+}
+
+// 找回原本的留言（用名字和內容在貼文底下找），再補送失敗的回覆
+function apiResendLog(pw, logRow) {
+  auth_(pw);
+  const sh = sheet_(SH_LOG, LOG_HEADERS);
+  logRow = Number(logRow);
+  if (logRow < 2 || logRow > sh.getLastRow()) throw new Error('找不到這筆紀錄');
+  const r = sh.getRange(logRow, 1, 1, LOG_HEADERS.length).getValues()[0];
+  const res = String(r[8]);
+  if (/已重送成功/.test(res)) return { data: loadData_(), failed: apiFailed(pw), msg: '這筆已經重送過了' };
+  const page = getPages_().find(function (p) { return p.name === String(r[1]); });
+  if (!page) throw new Error('找不到粉專「' + r[1] + '」');
+  const platform = String(r[2]), who = String(r[4]), text = String(r[5]), postId = String(r[6]);
+
+  // 1. 在貼文底下找這個人的這則留言
+  const cid = findComment_(page, platform, postId, who, text);
+  if (!cid) throw new Error('在貼文底下找不到「' + who + '」留的「' + text + '」，可能留言被刪除了，請手動私訊');
+
+  // 2. 找出當時符合的規則，組出要回的內容
+  const ev = { pageId: page.pageId, platform: platform, type: '留言', postId: postId, text: text, isReply: /回覆/.test(String(r[3])) };
+  const rule = matchRule_(getRules_(), ev, true);
+  if (!rule) throw new Error('現在已經沒有符合的規則（可能規則被改掉或停用），請手動回覆');
+
+  // 3. 補送失敗的部分
+  const out = [];
+  let allOk = true;
+  if (/私訊:失敗/.test(res)) {
+    if (!rule.dm) throw new Error('規則沒有私訊內容');
+    const x = send_(page, platform, '私訊留言', cid, { text: fill_(pick_(rule.dm), who), links: rule.links, quick: rule.quick });
+    out.push('私訊:' + (x.ok ? '成功' : '失敗 ' + x.msg));
+    if (!x.ok) allOk = false;
+  }
+  if (/公開:失敗/.test(res) && rule.publicReply) {
+    const y = send_(page, platform, '公開', cid, { text: fill_(pick_(rule.publicReply), who) });
+    out.push('公開:' + (y.ok ? '成功' : '失敗 ' + y.msg));
+    if (!y.ok) allOk = false;
+  }
+  if (allOk) {
+    const when = Utilities.formatDate(new Date(), tz_(), 'MM/dd HH:mm');
+    sh.getRange(logRow, 9).setValue('已重送成功（' + when + '）｜原本：' + res);
+  }
+  log_([new Date(), page.name, platform, '補送', who, text, postId, rule.hit, out.join(' / ')]);
+  return { data: loadData_(), failed: apiFailed(pw), msg: allOk ? '已重送成功' : '還是失敗：' + out.join(' / ') };
+}
+
+function findComment_(page, platform, postId, who, text) {
+  const want = norm_(text).trim();
+  let path = postId + (platform === 'IG' ? '/comments' : '/comments');
+  let params = platform === 'IG'
+    ? { fields: 'id,text,username', limit: 100 }
+    : { fields: 'id,message,from{id,name}', limit: 100, filter: 'stream', order: 'reverse_chronological' };
+  for (let pageNo = 0; pageNo < 10; pageNo++) {
+    const g = graph_('get', path, params, page.token);
+    if (!g.ok) throw new Error('讀取貼文留言失敗：' + g.msg);
+    const list = g.data.data || [];
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      const name = platform === 'IG' ? c.username : (c.from && c.from.name);
+      const msg = platform === 'IG' ? c.text : c.message;
+      if (String(name || '') === who && norm_(String(msg || '')).trim() === want) return c.id;
+    }
+    const next = g.data.paging && g.data.paging.cursors && g.data.paging.next ? g.data.paging.cursors.after : '';
+    if (!next) break;
+    params = Object.assign({}, params, { after: next });
+  }
+  return '';
 }
 
 // 重送：把指定的失敗訊息改回「等待」，馬上處理

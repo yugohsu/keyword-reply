@@ -814,14 +814,16 @@ function failedCard() {
   let h = `<div class="card" style="border:3px solid var(--bad)">
     <h2 style="color:var(--bad)">沒送出去的訊息（${list.length}）</h2>
     <div class="hint">最近 7 天送失敗的訊息。按「重送」會再送一次；如果還是失敗，看紅字原因。</div>
-    <button class="big" style="margin:6px 0 14px" onclick="resend(${JSON.stringify(list.map(f => f.row))})">全部重送</button>`;
+    ${list.some(f => f.row) ? `<button class="big" style="margin:6px 0 14px" onclick="resend(${JSON.stringify(list.filter(f => f.row).map(f => f.row))})">全部重送</button>` : ''}`;
   list.forEach(f => {
     h += `<div style="border-top:1px solid var(--line);padding:12px 0">
       <div style="font-size:18px;font-weight:900">${esc(f.who || '(沒有名字)')}　<span style="font-size:15px;color:var(--muted)">${esc(f.time)}</span></div>
       <div>${esc(f.page)}　${esc(f.platform)}　${f.action === '公開' ? '公開回覆' : '私訊'}</div>
       <div>對方寫：${esc(f.text)}</div>
       <div style="color:var(--bad)">${esc(f.result)}</div>
-      <button class="btn pri" style="margin-top:8px" onclick="resend([${f.row}])">重送</button>
+      ${f.row ? `<button class="btn pri" style="margin-top:8px" onclick="resend([${f.row}])">重送</button>`
+        : `<div class="hint">這筆是舊版程式的失敗，按下去會先在貼文底下找回這則留言，再補送。</div>
+           <button class="btn pri" style="margin-top:8px" onclick="resendLog(${f.logRow})">找回留言並重送</button>`}
     </div>`;
   });
   return h + `</div>`;
@@ -834,6 +836,14 @@ async function resend(rows) {
   LOGS = null;
   await loadLogs();
   toast(FAILED.some(f => rows.includes(f.row)) ? '有些還是失敗，請看紅字原因' : D.stats.waiting ? '已重送；Meta 忙碌的會在 1 分鐘後自動再試' : '已重送成功', 4500);
+}
+async function resendLog(row) {
+  toast('找回留言並重送中…', 10000);
+  const res = await call('apiResendLog', PW, row);
+  D = res.data;
+  LOGS = null;
+  await loadLogs();
+  toast(res.msg, 5000);
 }
 async function refreshLogs() {
   D = await call('apiLoad', PW);
