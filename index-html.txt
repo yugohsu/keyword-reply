@@ -770,12 +770,13 @@ function renderLogs() {
     <div class="card">今日未觸發<b style="color:var(--muted)">${t['未觸發']}</b></div>
     <div class="card">今日失敗<b style="color:var(--bad)">${t['失敗']}</b></div>
   </div>
+  ${D.settings.logUrl || D.settings.sheetUrl ? `<a class="big" style="display:block;text-align:center;text-decoration:none;margin:0 0 14px" href="${esc(D.settings.logUrl || D.settings.sheetUrl)}" target="_blank">打開完整紀錄（試算表）</a>` : ''}
   <div class="row" style="margin:0 0 14px">
     <button class="btn pri" onclick="refreshLogs()">重新整理</button>
     ${D.stats.waiting ? `<button class="btn pri" onclick="runQueue()">立即處理排隊（${D.stats.waiting}）</button>` : ''}
   </div>
   <div class="card"><h2>${LOGF.page ? esc(LOGF.page) : '全部粉專'}　最近紀錄</h2>
-  <div class="hint">最多顯示最近 150 筆；完整紀錄在雲端硬碟的「關鍵字自動回覆_資料」試算表。</div>`;
+  <div class="hint">這裡最多顯示最近 150 筆；全部紀錄請按上面的「打開完整紀錄」。</div>`;
   if (!LOGS.rows.length) h += `<div class="hint">沒有符合的紀錄。</div>`;
   else {
     h += `<table><tr><th>時間</th><th>來源</th><th>內容</th><th>結果</th></tr>`;

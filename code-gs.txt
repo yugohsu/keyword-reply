@@ -988,7 +988,8 @@ function loadData_() {
       logAll: isLogAll_(),
       hasLineToken: !!prop_('LINE_TOKEN'),
       email: Session.getEffectiveUser().getEmail(),
-      sheetUrl: ss_().getUrl()
+      sheetUrl: ss_().getUrl(),
+      logUrl: ss_().getUrl() + '#gid=' + sheet_(SH_LOG, LOG_HEADERS).getSheetId()
     }
   };
 }
