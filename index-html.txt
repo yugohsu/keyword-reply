@@ -369,7 +369,7 @@ let BF = null;
 async function openBackfill(id) {
   const r = D.rules.find(x => x.id === id);
   const res = await call('apiBackfillScan', PW, id);
-  BF = { id: id, rule: r, list: res.list, observe: res.observe, hasDm: res.hasDm, hasPublic: res.hasPublic, running: false };
+  BF = { id: id, rule: r, list: res.list, skip: res.skip || {}, observe: res.observe, hasDm: res.hasDm, hasPublic: res.hasPublic, running: false };
   renderBackfill();
 }
 function renderBackfill() {
@@ -377,7 +377,9 @@ function renderBackfill() {
   const kw = b.rule.mode === '任何留言' ? '任何內容' : b.rule.keywords;
   let h = `<div class="card">
     <h2>補發：${esc(kw)}</h2>
-    <div class="hint">找出最近 7 天、照「現在的規則」應該要回、但當時沒回到的留言（例如當時不是指定貼文，或規則還在只觀察）。已經回過的人不會重複。</div>`;
+    <div class="hint">找出最近 7 天、照「現在的規則」應該要回、但當時沒回到的留言（例如當時不是指定貼文，或規則還在只觀察）。每一則都會到 Facebook 確認：留言底下粉專已經回過、或已經私訊過的（包含手動回的）都不會列出來。</div>
+    ${(b.skip.replied || b.skip.deleted) ? `<div style="font-size:18px;font-weight:900;margin-top:10px;color:var(--tint-ink)">已排除：已經回過 ${b.skip.replied || 0} 則${b.skip.deleted ? `、留言已刪除 ${b.skip.deleted} 則` : ''}</div>` : ''}
+    ${b.skip.unverified ? `<div class="notice" style="margin-top:10px"><b>有 ${b.skip.unverified} 則沒辦法到 Facebook 確認</b>${esc(b.skip.err || '')}　這些只能照系統紀錄判斷，可能有已經手動回過的。</div>` : ''}`;
   if (!b.list.length) {
     h += `<div style="font-size:20px;font-weight:900;margin:16px 0">沒有需要補發的留言</div>`;
   } else {
@@ -408,7 +410,7 @@ async function runBackfill() {
   D = await call('apiLoad', PW);
   toast(`補發完成：成功 ${ok} 則` + (fail ? `，失敗 ${fail} 則（可到紀錄重送）` : '') + (nf ? `，找不到留言 ${nf} 則` : ''), 8000);
   const res = await call('apiBackfillScan', PW, BF.id);
-  BF.list = res.list; BF.running = false;
+  BF.list = res.list; BF.skip = res.skip || {}; BF.running = false;
   renderBackfill();
 }
 
