@@ -356,6 +356,7 @@ function renderRules() {
       <div class="row">
         <button class="btn pri" onclick="openEditor('${r.id}', false)">編輯</button>
         <button class="btn pri" onclick="openEditor('${r.id}', true)">複製</button>
+        ${hasComment ? `<button class="btn pri" onclick="openBackfill('${r.id}')">補發</button>` : ''}
         <button class="btn" onclick="toggleRule('${r.id}')">${r.enabled ? '停用' : '啟用'}</button>
         <button class="btn red" onclick="deleteRule('${r.id}')">刪除</button>
       </div>
@@ -363,6 +364,53 @@ function renderRules() {
   });
   $('main').innerHTML = h;
 }
+/* ================= 補發 ================= */
+let BF = null;
+async function openBackfill(id) {
+  const r = D.rules.find(x => x.id === id);
+  const res = await call('apiBackfillScan', PW, id);
+  BF = { id: id, rule: r, list: res.list, observe: res.observe, hasDm: res.hasDm, hasPublic: res.hasPublic, running: false };
+  renderBackfill();
+}
+function renderBackfill() {
+  const b = BF;
+  const kw = b.rule.mode === '任何留言' ? '任何內容' : b.rule.keywords;
+  let h = `<div class="card">
+    <h2>補發：${esc(kw)}</h2>
+    <div class="hint">找出最近 7 天、照「現在的規則」應該要回、但當時沒回到的留言（例如當時不是指定貼文，或規則還在只觀察）。已經回過的人不會重複。</div>`;
+  if (!b.list.length) {
+    h += `<div style="font-size:20px;font-weight:900;margin:16px 0">沒有需要補發的留言</div>`;
+  } else {
+    h += `<div style="font-size:22px;font-weight:900;margin:14px 0">共 ${b.list.length} 則可以補發</div>
+      <div class="hint">會送出：${[b.hasPublic ? '公開回覆' : '', b.hasDm ? '私訊（含按鈕）' : ''].filter(Boolean).join(' + ')}</div>`;
+    if (b.observe) h += `<div class="notice" style="margin:12px 0"><b>這條規則現在是「只觀察」</b>要先到「編輯」改成「正式回覆」（設定裡的總開關也要是「照各規則設定」），才能補發。</div>`;
+    else h += `<button class="big" style="margin:12px 0" ${b.running ? 'disabled' : ''} onclick="runBackfill()">${b.running ? '補發中…' : '確定補發 ' + b.list.length + ' 則'}</button>`;
+    h += `<table><tr><th>時間</th><th>誰</th><th>留言</th></tr>` +
+      b.list.map(x => `<tr><td>${esc(x.time)}</td><td>${esc(x.who)}</td><td>${esc(x.text)}</td></tr>`).join('') + `</table>`;
+  }
+  h += `<button class="btn" style="margin-top:14px" onclick="BF=null;renderRules()">返回規則</button></div>`;
+  $('main').innerHTML = h;
+  window.scrollTo(0, 0);
+}
+async function runBackfill() {
+  BF.running = true;
+  renderBackfill();
+  let ok = 0, fail = 0, nf = 0;
+  const rows = BF.list.map(x => x.logRow);
+  for (let i = 0; i < rows.length; i += 30) {
+    toast(`補發中… ${Math.min(i + 30, rows.length)} / ${rows.length}`, 60000);
+    try {
+      const r = await call('apiBackfillSend', PW, BF.id, rows.slice(i, i + 30));
+      ok += r.ok; fail += r.fail; nf += r.notFound;
+    } catch (e) { break; }
+  }
+  D = await call('apiLoad', PW);
+  toast(`補發完成：成功 ${ok} 則` + (fail ? `，失敗 ${fail} 則（可到紀錄重送）` : '') + (nf ? `，找不到留言 ${nf} 則` : ''), 8000);
+  const res = await call('apiBackfillScan', PW, BF.id);
+  BF.list = res.list; BF.running = false;
+  renderBackfill();
+}
+
 async function toggleRule(id) {
   D = await call('apiToggleRule', PW, id);
   renderRules();

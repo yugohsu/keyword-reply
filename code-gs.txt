@@ -1046,7 +1046,7 @@ function loadData_() {
 // 紀錄查詢：可依粉專、結果篩選
 function logKind_(res) {
   res = String(res);
-  if (/已重送成功/.test(res)) return '觸發';
+  if (/已重送成功|^已補發/.test(res)) return '觸發';
   if (/失敗/.test(res)) return '失敗';
   if (/觀察/.test(res)) return '觀察';
   if (/未觸發/.test(res)) return '未觸發';
@@ -1426,35 +1426,167 @@ function apiResendLog(pw, logRow) {
   return { data: loadData_(), failed: apiFailed(pw), msg: allOk ? '已重送成功' : '還是失敗：' + out.join(' / ') };
 }
 
-// 先用「名字 + 內容」找；Meta 沒給名字時，改用「內容 + 留言時間（紀錄時間前後 5 分鐘）」找
-function findComment_(page, platform, postId, who, text, logMs) {
-  const want = norm_(text).trim();
-  const byTime = [];
-  let path = postId + '/comments';
+// 讀一篇貼文底下的留言（最多 1000 則）
+function loadComments_(page, platform, postId) {
+  const out = [];
   let params = platform === 'IG'
     ? { fields: 'id,text,username,timestamp', limit: 100 }
     : { fields: 'id,message,from{id,name},created_time', limit: 100, filter: 'stream', order: 'reverse_chronological' };
   for (let pageNo = 0; pageNo < 10; pageNo++) {
-    const g = graph_('get', path, params, page.token);
+    const g = graph_('get', postId + '/comments', params, page.token);
     if (!g.ok) throw new Error('讀取貼文留言失敗：' + g.msg);
-    const list = g.data.data || [];
-    for (let i = 0; i < list.length; i++) {
-      const c = list[i];
-      const name = platform === 'IG' ? c.username : (c.from && c.from.name);
-      const msg = platform === 'IG' ? c.text : c.message;
-      if (norm_(String(msg || '')).trim() !== want) continue;
-      if (String(name || '') === who) return c.id;
-      const ct = Date.parse(String(c.created_time || c.timestamp || '').replace(/\+0000$/, 'Z'));
-      if (logMs && ct && Math.abs(ct - logMs) <= 300000) byTime.push({ id: c.id, gap: Math.abs(ct - logMs), named: !!name });
-    }
+    (g.data.data || []).forEach(function (c) {
+      out.push({
+        id: c.id,
+        name: String((platform === 'IG' ? c.username : (c.from && c.from.name)) || ''),
+        text: norm_(String((platform === 'IG' ? c.text : c.message) || '')).trim(),
+        ms: Date.parse(String(c.created_time || c.timestamp || '').replace(/\+0000$/, 'Z')) || 0
+      });
+    });
     const next = g.data.paging && g.data.paging.cursors && g.data.paging.next ? g.data.paging.cursors.after : '';
     if (!next) break;
     params = Object.assign({}, params, { after: next });
   }
-  // 沒有名字可以對時，取時間最接近、而且沒有名字（被 Meta 隱藏）的那則
-  const cands = byTime.filter(function (c) { return !c.named; }).sort(function (a, b) { return a.gap - b.gap; });
+  return out;
+}
+
+// 先用「名字 + 內容」找；Meta 沒給名字時，改用「內容 + 留言時間（紀錄時間前後 5 分鐘）」找
+function matchComment_(list, who, text, logMs, used) {
+  used = used || {};
+  const want = norm_(text).trim();
+  const same = list.filter(function (c) { return c.text === want && !used[c.id]; });
+  const named = same.filter(function (c) { return c.name && c.name === who; });
+  if (named.length) {
+    // 同一人留了好幾次，取時間最接近的
+    named.sort(function (a, b) { return Math.abs(a.ms - logMs) - Math.abs(b.ms - logMs); });
+    return named[0].id;
+  }
+  if (!logMs) return '';
+  const cands = same.filter(function (c) { return !c.name && c.ms && Math.abs(c.ms - logMs) <= 300000; })
+    .map(function (c) { return { id: c.id, gap: Math.abs(c.ms - logMs) }; })
+    .sort(function (a, b) { return a.gap - b.gap; });
   if (cands.length === 1 || (cands.length > 1 && cands[1].gap - cands[0].gap > 20000)) return cands[0].id;
   return '';
+}
+
+function findComment_(page, platform, postId, who, text, logMs) {
+  return matchComment_(loadComments_(page, platform, postId), who, text, logMs);
+}
+
+/* =========================================================
+ *  補發：規則改了之後，把以前沒回到（或只觀察）的留言補回覆
+ * ========================================================= */
+function backfillList_(rule) {
+  const page = getPages_().find(function (p) { return p.pageId === rule.pageId; });
+  if (!page) throw new Error('找不到這條規則的粉專');
+  const sh = sheet_(SH_LOG, LOG_HEADERS);
+  const n = sh.getLastRow();
+  if (n < 2) return { page: page, list: [] };
+  const from = Math.max(2, n - 4999);
+  const rows = sh.getRange(from, 1, n - from + 1, LOG_HEADERS.length).getValues();
+  const limit = Date.now() - 7 * 86400000;
+  const r2 = Object.assign({}, rule, { enabled: true });
+
+  // 已經回過的（同一人、同一篇貼文）不要重複
+  const done = {};
+  rows.forEach(function (r) {
+    const res = String(r[8]);
+    if (/^留言/.test(String(r[3])) && /公開:成功|私訊:成功|已補發|已重送成功/.test(res)) done[r[4] + '|' + r[6]] = 1;
+    if (String(r[3]) === '補送' && /成功/.test(res)) done[r[4] + '|' + r[6]] = 1;
+  });
+
+  const seen = {};
+  const list = [];
+  rows.forEach(function (r, i) {
+    const t = r[0] instanceof Date ? r[0].getTime() : 0;
+    if (!t || t < limit) return;
+    if (String(r[1]) !== page.name) return;
+    const type = String(r[3]);
+    if (!/^留言/.test(type) || !String(r[6])) return;
+    const res = String(r[8]);
+    if (!/^未觸發|觀察/.test(res) || /已補發/.test(res)) return;
+    const key = r[4] + '|' + r[6];
+    if (done[key] || seen[key]) return;
+    const ev = { pageId: page.pageId, platform: String(r[2]), type: '留言', postId: String(r[6]),
+      text: String(r[5]), isReply: /回覆/.test(type) };
+    if (!matchRule_([r2], ev, true)) return;
+    seen[key] = 1;
+    list.push({ logRow: from + i, time: fmt_(r[0]), ms: t, platform: String(r[2]), who: String(r[4]),
+      text: String(r[5]), postId: String(r[6]), isReply: ev.isReply });
+  });
+  return { page: page, list: list };
+}
+
+// 先看看有哪些可以補發
+function apiBackfillScan(pw, ruleId) {
+  auth_(pw);
+  const rule = getRules_().find(function (r) { return r.id === ruleId; });
+  if (!rule) throw new Error('找不到這條規則');
+  const b = backfillList_(rule);
+  return {
+    observe: rule.observe || isObserve_(),
+    hasDm: !!rule.dm, hasPublic: !!rule.publicReply,
+    list: b.list.map(function (x) { return { logRow: x.logRow, time: x.time, who: x.who, text: x.text }; })
+  };
+}
+
+// 真的補發（一次最多 30 則，網頁會自動接著送下一批）
+function apiBackfillSend(pw, ruleId, logRows) {
+  auth_(pw);
+  if (isObserve_()) throw new Error('設定裡的總開關是「全部只觀察」，要先改成「照各規則設定」才能補發');
+  const rule = getRules_().find(function (r) { return r.id === ruleId; });
+  if (!rule) throw new Error('找不到這條規則');
+  if (rule.observe) throw new Error('這條規則是「只觀察」，要先改成「正式回覆」才能補發');
+  const want = {};
+  (logRows || []).slice(0, 30).forEach(function (x) { want[Number(x)] = 1; });
+  const b = backfillList_(rule);
+  const page = b.page;
+  const items = b.list.filter(function (x) { return want[x.logRow]; });
+  const sh = sheet_(SH_LOG, LOG_HEADERS);
+  const comments = {};
+  const used = {};
+  const when = Utilities.formatDate(new Date(), tz_(), 'MM/dd HH:mm');
+  let ok = 0, fail = 0, notFound = 0;
+  const DAY7 = 7 * 86400000 - 3600000;
+
+  items.forEach(function (x) {
+    if (!comments[x.postId]) {
+      try { comments[x.postId] = loadComments_(page, x.platform, x.postId); }
+      catch (e) { comments[x.postId] = []; }
+    }
+    const cid = matchComment_(comments[x.postId], x.who, x.text, x.ms, used);
+    if (!cid) {
+      notFound++;
+      log_([new Date(), page.name, x.platform, '補發', x.who, x.text, x.postId, '', '補發失敗：找不到這則留言（可能被刪除）']);
+      return;
+    }
+    used[cid] = 1;
+    const info = { page: page, platform: x.platform, who: x.who, text: x.text, keyword: '' };
+    const jobs = [];
+    if (rule.publicReply) jobs.push(['公開', { text: fill_(pick_(rule.publicReply), x.who) }]);
+    // 留言私訊只能在 7 天內送
+    if (rule.dm && Date.now() - x.ms < DAY7) {
+      jobs.push(['私訊留言', { text: fill_(pick_(rule.dm), x.who), links: rule.links, quick: rule.quick }]);
+    }
+    const out = [];
+    let allOk = true;
+    jobs.forEach(function (j) {
+      let r = send_(page, x.platform, j[0], cid, j[1]);
+      if (!r.ok && r.transient) { Utilities.sleep(1500); r = send_(page, x.platform, j[0], cid, j[1]); }
+      if (r.ok) out.push((j[0] === '公開' ? '公開:' : '私訊:') + '成功' + (r.note || ''));
+      else {
+        allOk = false;
+        out.push((j[0] === '公開' ? '公開:' : '私訊:') + '失敗 ' + r.msg);
+        try { enqueue_(info, j[0], cid, j[1], new Date(), r.msg); } catch (e) {}
+      }
+    });
+    if (rule.dm && Date.now() - x.ms >= DAY7) out.push('私訊:超過 7 天，Meta 不給送，只補公開回覆');
+    if (allOk) ok++; else fail++;
+    const old = String(sh.getRange(x.logRow, 9).getValue());
+    sh.getRange(x.logRow, 9).setValue('已補發（' + when + '）｜原本：' + old);
+    log_([new Date(), page.name, x.platform, '補發', x.who, x.text, x.postId, '', out.join(' / ')]);
+  });
+  return { ok: ok, fail: fail, notFound: notFound, done: items.length };
 }
 
 // 重送：把指定的失敗訊息改回「等待」，馬上處理
