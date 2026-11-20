@@ -30,7 +30,7 @@ const SH_QUEUE = '排隊';
 const RULE_HEADERS = ['規則ID', '啟用', '粉專ID', '平台', '類型', '貼文ID', '貼文摘要', '關鍵字',
   '比對方式', '公開回覆', '私訊內容', '排除關鍵字', '只回第一層', '開始時間', '結束時間',
   '延遲最少秒', '延遲最多秒', '按鈕', '建立時間', '只觀察', '私訊比對方式', '同一人只回一次'];
-const LOG_HEADERS = ['時間', '粉專', '平台', '類型', '對象', '內容', '貼文ID', '符合關鍵字', '結果'];
+const LOG_HEADERS = ['時間', '粉專', '平台', '類型', '對象', '內容', '貼文ID', '符合關鍵字', '結果', '留言ID'];
 const QUEUE_HEADERS = ['加入時間', '預定時間', '粉專ID', '平台', '動作', '目標ID', '訊息', '對象',
   '原文', '關鍵字', '狀態', '結果', '嘗試次數'];
 
@@ -642,14 +642,14 @@ function onComment_(page, platform, ch, rules, ctx) {
   const rule = matchRule_(rules, ev);
   if (!rule) {
     if (isLogAll_()) log_([new Date(), page.name, platform, isReply ? '留言(回覆)' : '留言', name, text, postId, '',
-      '未觸發：' + missReason_(rules, ev)]);
+      '未觸發：' + missReason_(rules, ev), txt_(String(cid))]);
     return;
   }
 
   const info = { page: page, platform: platform, who: name, text: text, keyword: rule.hit, observe: rule.observe };
   if (repliedBefore_(rule, fromId, postId)) {
     log_([new Date(), page.name, platform, isReply ? '留言(回覆)' : '留言', name, text, postId, rule.hit,
-      '未觸發：同一人在這篇貼文 6 小時內已經回過（規則設定同一人只回一次）']);
+      '未觸發：同一人在這篇貼文 6 小時內已經回過（規則設定同一人只回一次）', txt_(String(cid))]);
     return;
   }
   markReplied_(rule, fromId, postId, info);
@@ -659,7 +659,7 @@ function onComment_(page, platform, ch, rules, ctx) {
 
   const results = runJobs_(info, cid, jobs, randDelay_(rule), ctx);
   if (/失敗/.test(results) && !/成功|排隊|排程|重送/.test(results)) unmark_(rule, fromId, postId);
-  log_([new Date(), page.name, platform, isReply ? '留言(回覆)' : '留言', name, text, postId, rule.hit, results]);
+  log_([new Date(), page.name, platform, isReply ? '留言(回覆)' : '留言', name, text, postId, rule.hit, results, txt_(String(cid))]);
 }
 
 function onMessage_(page, platform, m, rules, ctx) {
@@ -942,7 +942,10 @@ function ensureSetup_() {
       rsh.getRange(1, c).setValue(RULE_HEADERS[c - 1]).setFontWeight('bold').setBackground('#FFE599');
     }
   }
-  sheet_(SH_LOG, LOG_HEADERS);
+  const lsh = sheet_(SH_LOG, LOG_HEADERS);
+  if (lsh.getRange(1, LOG_HEADERS.length).getValue() !== LOG_HEADERS[LOG_HEADERS.length - 1]) {
+    lsh.getRange(1, LOG_HEADERS.length).setValue(LOG_HEADERS[LOG_HEADERS.length - 1]).setFontWeight('bold');
+  }
   sheet_(SH_QUEUE, QUEUE_HEADERS);
   if (prop_('FIX_RESENT') !== '1') {
     setProp_('FIX_RESENT', '1');
@@ -1532,7 +1535,7 @@ function backfillList_(rule) {
     if (!matchRule_([r2], ev, true)) return;
     seen[key] = 1;
     list.push({ logRow: from + i, time: fmt_(r[0]), ms: t, platform: String(r[2]), who: String(r[4]),
-      text: String(r[5]), postId: String(r[6]), isReply: ev.isReply });
+      text: String(r[5]), postId: String(r[6]), isReply: ev.isReply, logCid: String(r[9] || '') });
   });
 
   // 到 Facebook 確認每一則留言的實際狀況：已經有人回過、已經私訊過、或留言被刪除的都排除
@@ -1541,6 +1544,16 @@ function backfillList_(rule) {
   const used = {};
   const final = [];
   list.forEach(function (x) {
+    // 新紀錄有存留言編號 → 直接問 Facebook 這則留言的狀態，最準確
+    if (x.logCid) {
+      const st = commentState_(page, x.platform, x.logCid);
+      if (st === 'gone') { skip.deleted++; return; }
+      if (st === 'replied') { skip.replied++; return; }
+      if (st === 'error') skip.unverified++;
+      x.cid = x.logCid;
+      final.push(x);
+      return;
+    }
     if (!comments[x.postId]) {
       try { comments[x.postId] = loadComments_(page, x.platform, x.postId); }
       catch (e) { comments[x.postId] = null; skip.err = String(e.message || e); }
@@ -1548,7 +1561,7 @@ function backfillList_(rule) {
     const cl = comments[x.postId];
     if (!cl) { skip.unverified++; final.push(x); return; } // 讀不到就照紀錄判斷
     const c = matchCommentObj_(cl, x.who, x.text, x.ms, used);
-    if (!c) { skip.deleted++; return; }
+    if (!c) { skip.unknown = (skip.unknown || 0) + 1; return; }
     used[c.id] = 1;
     if (c.pageReplied || c.dmDone) { skip.replied++; return; }
     x.cid = c.id;
@@ -1558,6 +1571,21 @@ function backfillList_(rule) {
 }
 
 // 先看看有哪些可以補發
+// 直接查一則留言：'ok' 可以補發、'replied' 已經回過、'gone' 被刪除、'error' 查不到
+function commentState_(page, platform, cid) {
+  const fields = platform === 'IG' ? 'id,replies.limit(20){username}' : 'id,can_reply_privately,comments.limit(20){from{id}}';
+  const g = graph_('get', cid, { fields: fields }, page.token);
+  if (!g.ok) return /does not exist|不存在|Unsupported get request/i.test(g.msg) ? 'gone' : 'error';
+  const c = g.data;
+  if (platform !== 'IG') {
+    if (c.can_reply_privately === false) return 'replied';
+    if (((c.comments && c.comments.data) || []).some(function (x) { return x.from && String(x.from.id) === String(page.pageId); })) return 'replied';
+  } else if (page.igUsername && ((c.replies && c.replies.data) || []).some(function (x) { return x.username === page.igUsername; })) {
+    return 'replied';
+  }
+  return 'ok';
+}
+
 function apiBackfillScan(pw, ruleId) {
   auth_(pw);
   const rule = getRules_().find(function (r) { return r.id === ruleId; });
