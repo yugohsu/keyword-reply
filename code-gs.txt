@@ -1549,7 +1549,9 @@ function apiBackfillSend(pw, ruleId, logRows) {
   let ok = 0, fail = 0, notFound = 0;
   const DAY7 = 7 * 86400000 - 3600000;
 
-  items.forEach(function (x) {
+  items.forEach(function (x, idx) {
+    // 每個人之間隨機隔 1～2.5 秒，避免一次大量相同回覆被 Facebook 當成垃圾訊息
+    if (idx > 0) Utilities.sleep(1000 + Math.floor(Math.random() * 1500));
     if (!comments[x.postId]) {
       try { comments[x.postId] = loadComments_(page, x.platform, x.postId); }
       catch (e) { comments[x.postId] = []; }

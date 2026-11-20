@@ -382,7 +382,8 @@ function renderBackfill() {
     h += `<div style="font-size:20px;font-weight:900;margin:16px 0">沒有需要補發的留言</div>`;
   } else {
     h += `<div style="font-size:22px;font-weight:900;margin:14px 0">共 ${b.list.length} 則可以補發</div>
-      <div class="hint">會送出：${[b.hasPublic ? '公開回覆' : '', b.hasDm ? '私訊（含按鈕）' : ''].filter(Boolean).join(' + ')}</div>`;
+      <div class="hint">會送出：${[b.hasPublic ? '公開回覆' : '', b.hasDm ? '私訊（含按鈕）' : ''].filter(Boolean).join(' + ')}。每個人之間會隔 1～2.5 秒，${b.list.length} 則大約要 ${Math.ceil(b.list.length * 2.5 / 60)} 分鐘，送的時候請不要關掉網頁。</div>
+      <div class="hint" style="color:var(--bad)">補發前請先確認：這些人是不是已經用其他方式（手動私訊、LINE）聯絡過了，避免重複收到。</div>`;
     if (b.observe) h += `<div class="notice" style="margin:12px 0"><b>這條規則現在是「只觀察」</b>要先到「編輯」改成「正式回覆」（設定裡的總開關也要是「照各規則設定」），才能補發。</div>`;
     else h += `<button class="big" style="margin:12px 0" ${b.running ? 'disabled' : ''} onclick="runBackfill()">${b.running ? '補發中…' : '確定補發 ' + b.list.length + ' 則'}</button>`;
     h += `<table><tr><th>時間</th><th>誰</th><th>留言</th></tr>` +
