@@ -369,7 +369,8 @@ let BF = null;
 async function openBackfill(id) {
   const r = D.rules.find(x => x.id === id);
   const res = await call('apiBackfillScan', PW, id);
-  BF = { id: id, rule: r, list: res.list, skip: res.skip || {}, observe: res.observe, hasDm: res.hasDm, hasPublic: res.hasPublic, running: false };
+  BF = { id: id, rule: r, list: res.list, skip: res.skip || {}, observe: res.observe, hasDm: res.hasDm, hasPublic: res.hasPublic, running: false,
+    sel: new Set(res.list.map(x => x.logRow)) };
   renderBackfill();
 }
 function renderBackfill() {
@@ -385,22 +386,45 @@ function renderBackfill() {
     h += `<div style="font-size:20px;font-weight:900;margin:16px 0">沒有需要補發的留言</div>`;
   } else {
     h += `<div style="font-size:22px;font-weight:900;margin:14px 0">共 ${b.list.length} 則可以補發</div>
-      <div class="hint">會送出：${[b.hasPublic ? '公開回覆' : '', b.hasDm ? '私訊（含按鈕）' : ''].filter(Boolean).join(' + ')}。每個人之間會隔 1～2.5 秒，${b.list.length} 則大約要 ${Math.ceil(b.list.length * 2.5 / 60)} 分鐘，送的時候請不要關掉網頁。</div>
+      <div class="hint">會送出：${[b.hasPublic ? '公開回覆' : '', b.hasDm ? '私訊（含按鈕）' : ''].filter(Boolean).join(' + ')}。每個人之間會隔 1～2.5 秒，${b.sel.size} 則大約要 ${Math.max(1, Math.ceil(b.sel.size * 2.5 / 60))} 分鐘，送的時候請不要關掉網頁。</div>
       <div class="hint" style="color:var(--bad)">補發前請先確認：這些人是不是已經用其他方式（手動私訊、LINE）聯絡過了，避免重複收到。</div>`;
     if (b.observe) h += `<div class="notice" style="margin:12px 0"><b>這條規則現在是「只觀察」</b>要先到「編輯」改成「正式回覆」（設定裡的總開關也要是「照各規則設定」），才能補發。</div>`;
-    else h += `<button class="big" style="margin:12px 0" ${b.running ? 'disabled' : ''} onclick="runBackfill()">${b.running ? '補發中…' : '確定補發 ' + b.list.length + ' 則'}</button>`;
-    h += `<table><tr><th>時間</th><th>誰</th><th>留言</th></tr>` +
-      b.list.map(x => `<tr><td>${esc(x.time)}</td><td>${esc(x.who)}</td><td>${esc(x.text)}</td></tr>`).join('') + `</table>`;
+    else h += `<button class="big" style="margin:12px 0" ${b.running || !b.sel.size ? 'disabled' : ''} onclick="runBackfill()">${b.running ? '補發中…' : b.sel.size ? '補發勾選的 ' + b.sel.size + ' 則' : '請先勾選要補發的人'}</button>`;
+    h += `<div class="row" style="margin:4px 0 10px">
+        <button class="btn" onclick="bfAll(true)">全選</button>
+        <button class="btn" onclick="bfAll(false)">全部不選</button>
+        <span style="font-size:18px;font-weight:900;align-self:center">已勾選 ${b.sel.size} / ${b.list.length}</span>
+      </div>
+      <div class="hint">點整列就可以勾選或取消。</div>`;
+    h += `<table><tr><th>補發</th><th>時間</th><th>誰</th><th>留言</th></tr>` +
+      b.list.map(x => `<tr onclick="bfToggle(${x.logRow})" style="cursor:pointer;${b.sel.has(x.logRow) ? '' : 'opacity:.45'}">
+        <td><input type="checkbox" style="width:26px;height:26px;pointer-events:none" ${b.sel.has(x.logRow) ? 'checked' : ''}></td>
+        <td>${esc(x.time)}</td><td style="font-weight:900">${esc(x.who)}</td><td>${esc(x.text)}</td></tr>`).join('') + `</table>`;
   }
   h += `<button class="btn" style="margin-top:14px" onclick="BF=null;renderRules()">返回規則</button></div>`;
   $('main').innerHTML = h;
   window.scrollTo(0, 0);
 }
+function bfToggle(row) {
+  if (BF.running) return;
+  if (BF.sel.has(row)) BF.sel.delete(row); else BF.sel.add(row);
+  const y = window.scrollY;
+  renderBackfill();
+  window.scrollTo(0, y);
+}
+function bfAll(on) {
+  if (BF.running) return;
+  BF.sel = on ? new Set(BF.list.map(x => x.logRow)) : new Set();
+  const y = window.scrollY;
+  renderBackfill();
+  window.scrollTo(0, y);
+}
 async function runBackfill() {
+  const rows = BF.list.map(x => x.logRow).filter(r => BF.sel.has(r));
+  if (!rows.length) return;
   BF.running = true;
   renderBackfill();
   let ok = 0, fail = 0, nf = 0;
-  const rows = BF.list.map(x => x.logRow);
   for (let i = 0; i < rows.length; i += 30) {
     toast(`補發中… ${Math.min(i + 30, rows.length)} / ${rows.length}`, 60000);
     try {
@@ -411,7 +435,7 @@ async function runBackfill() {
   D = await call('apiLoad', PW);
   toast(`補發完成：成功 ${ok} 則` + (fail ? `，失敗 ${fail} 則（可到紀錄重送）` : '') + (nf ? `，找不到留言 ${nf} 則` : ''), 8000);
   const res = await call('apiBackfillScan', PW, BF.id);
-  BF.list = res.list; BF.skip = res.skip || {}; BF.running = false;
+  BF.list = res.list; BF.skip = res.skip || {}; BF.running = false; BF.sel = new Set();
   renderBackfill();
 }
 
